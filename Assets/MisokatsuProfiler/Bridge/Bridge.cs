@@ -6,6 +6,7 @@ using Unity.Profiling.Editor;
 using UnityEditor;
 using UnityEditor.Profiling;
 using UnityEditorInternal;
+using UnityEditorInternal.Profiling;
 using UnityEngine;
 using UnityEngine.UIElements;
 
@@ -50,6 +51,8 @@ public class MisokatsuProfilerModule : ProfilerModule
     string m_currentSelectedThreadGroupName;
     [SerializeField]
     private bool m_isLive;
+    [SerializeField]
+    private ProfilerFrameDataHierarchyView m_FrameDataHierarchyView;
 
     private static readonly string[] CPUNames = new string[]
     {
@@ -82,10 +85,11 @@ public class MisokatsuProfilerModule : ProfilerModule
     private void OnGUI(Rect obj)
     {
         m_currentFrameIndex = (int)ProfilerWindow.selectedFrameIndex;
-        m_FrameDataHierarchyView.DoGUI(fetchData ? GetFrameDataView(m_currentSelectedThreadGroupName, m_currentThreadName, m_currentThreadId) : null, fetchData, ref updateViewLive, m_ViewType);
+        var frameDataView = GetFrameDataView(m_currentSelectedThreadGroupName, m_currentThreadName, m_currentThreadId);
+        m_FrameDataHierarchyView.DoGUI(frameDataView, ref updateViewLive, m_viewType);
     }
 
-    HierarchyFrameDataView GetFrameDataView(string threadGroupName, string threadName, ulong threadId)
+    private HierarchyFrameDataView GetFrameDataView(string threadGroupName, string threadName, ulong threadId)
     {
         var viewMode = HierarchyFrameDataView.ViewModes.Default;
         if (m_viewType == ProfilerViewType.Hierarchy)
@@ -94,7 +98,7 @@ public class MisokatsuProfilerModule : ProfilerModule
         return ProfilerWindow.GetFrameDataView(threadGroupName, threadName, threadId, viewMode, HierarchyFrameDataView.columnDontSort, false);
     }
 
-    HierarchyFrameDataView GetFrameDataView(int threadIndex)
+    private HierarchyFrameDataView GetFrameDataView(int threadIndex)
     {
         var viewMode = HierarchyFrameDataView.ViewModes.Default;
         if (m_viewType == ProfilerViewType.Hierarchy)

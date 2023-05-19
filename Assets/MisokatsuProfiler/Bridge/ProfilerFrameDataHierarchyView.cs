@@ -55,36 +55,12 @@ namespace UnityEditorInternal.Profiling
         SearchField m_SearchField;
         ProfilerFrameDataTreeView m_TreeView;
 
-        [SerializeField]
-        ProfilerDetailedObjectsView m_DetailedObjectsView;
-
-        [SerializeField]
-        ProfilerDetailedCallsView m_DetailedCallsView;
-
         public ProfilerFrameDataTreeView treeView
         {
             get
             {
                 InitIfNeeded();
                 return m_TreeView;
-            }
-        }
-
-        public ProfilerDetailedObjectsView detailedObjectsView
-        {
-            get
-            {
-                InitIfNeeded();
-                return m_DetailedObjectsView;
-            }
-        }
-
-        public ProfilerDetailedCallsView detailedCallsView
-        {
-            get
-            {
-                InitIfNeeded();
-                return m_DetailedCallsView;
             }
         }
 
@@ -169,16 +145,8 @@ namespace UnityEditorInternal.Profiling
         public delegate void SearchChangedCallback(string newSearch);
         public event SearchChangedCallback searchChanged;
 
-        static readonly ProfilerMarker m_DoGUIMarker = new ProfilerMarker(nameof(ProfilerFrameDataHierarchyView) + ".DoGUI");
-
         readonly string k_SerializationPrefKeyPrefix;
         string multiColumnHeaderStatePrefKey => k_SerializationPrefKeyPrefix + "MultiColumnHeaderState";
-        string splitter0StatePrefKey => k_SerializationPrefKeyPrefix + "Splitter.Relative[0]";
-        string splitter1StatePrefKey => k_SerializationPrefKeyPrefix + "Splitter.Relative[1]";
-        string detailedViewTypeStatePrefKey => k_SerializationPrefKeyPrefix + "DetailedViewTypeState";
-
-        string detailedObjectsViewPrefKeyPrefix => k_SerializationPrefKeyPrefix + "DetailedObjectsView.";
-        string detailedCallsViewPrefKeyPrefix => k_SerializationPrefKeyPrefix + "DetailedCallsView.";
 
         public ProfilerFrameDataHierarchyView(string serializationPrefKeyPrefix)
         {
@@ -207,15 +175,9 @@ namespace UnityEditorInternal.Profiling
                 HierarchyFrameDataView.columnSelfTime,
                 HierarchyFrameDataView.columnWarningCount
             };
-            var gpuHierarchyColumns = new[]
-            {
-                HierarchyFrameDataView.columnName,
-                HierarchyFrameDataView.columnTotalGpuPercent,
-                HierarchyFrameDataView.columnDrawCalls,
-                HierarchyFrameDataView.columnTotalGpuTime
-            };
-            var profilerColumns = gpuView ? gpuHierarchyColumns : cpuHierarchyColumns;
-            var defaultSortColumn = gpuView ? HierarchyFrameDataView.columnTotalGpuTime : HierarchyFrameDataView.columnTotalTime;
+
+            var profilerColumns = cpuHierarchyColumns;
+            var defaultSortColumn = HierarchyFrameDataView.columnTotalTime;
 
             var columns = CreateColumns(profilerColumns);
 
@@ -255,29 +217,13 @@ namespace UnityEditorInternal.Profiling
             m_SearchField = new SearchField();
             m_SearchField.downOrUpArrowKeyPressed += m_TreeView.SetFocusAndEnsureSelectedItem;
 
-            if (m_DetailedObjectsView == null)
-                m_DetailedObjectsView = new ProfilerDetailedObjectsView(detailedObjectsViewPrefKeyPrefix);
-            m_DetailedObjectsView.gpuView = gpuView;
-            m_DetailedObjectsView.frameItemEvent += FrameItem;
-            m_DetailedObjectsView.OnEnable(cpuModule, this);
-            if (m_DetailedCallsView == null)
-            {
-                m_DetailedCallsView = new ProfilerDetailedCallsView(detailedCallsViewPrefKeyPrefix);
-            }
-            m_DetailedCallsView.OnEnable(cpuModule, this);
-            m_DetailedCallsView.frameItemEvent += FrameItem;
-            if (m_DetailedViewSpliterState == null || !m_DetailedViewSpliterState.IsValid())
-                m_DetailedViewSpliterState = SplitterState.FromRelative(new[] { SessionState.GetFloat(splitter0StatePrefKey, 70f), SessionState.GetFloat(splitter1StatePrefKey, 30f) }, new[] { 450f, 50f }, null);
-
             m_Initialized = true;
         }
 
-        public override void OnEnable(CPUOrGPUProfilerModule cpuModule, IProfilerWindowController profilerWindow, bool isGpuView)
+        public override void OnEnable(CPUOrGPUProfilerModule cpuModule, IProfilerWindowController profilerWindow)
         {
-            base.OnEnable(cpuModule, profilerWindow, isGpuView);
+            base.OnEnable(cpuModule, profilerWindow);
             m_FrameIndex = FrameDataView.invalidOrCurrentFrameIndex;
-            m_DetailedObjectsView?.OnEnable(cpuModule, this);
-            m_DetailedCallsView?.OnEnable(cpuModule, this);
             profilerWindow.frameDataViewAboutToBeDisposed += OnFrameDataViewAboutToBeDisposed;
         }
 
@@ -417,184 +363,45 @@ namespace UnityEditorInternal.Profiling
             }
         }
 
-        public void DoGUI(HierarchyFrameDataView frameDataView, bool fetchData, ref bool updateViewLive, ProfilerViewType viewType)
+        public void DoGUI(HierarchyFrameDataView frameDataView, ref bool updateViewLive, ProfilerViewType viewType)
         {
-            using (m_DoGUIMarker.Auto())
+            if (Event.current.type != EventType.Layout && m_ThreadIndexDuringLastNonLayoutEvent != threadIndexInThreadNames)
             {
-                if (Event.current.type != EventType.Layout && m_ThreadIndexDuringLastNonLayoutEvent != threadIndexInThreadNames)
-                {
-                    m_ThreadIndexDuringLastNonLayoutEvent = threadIndexInThreadNames;
-                    EditorGUIUtility.ExitGUI();
-                }
-                InitIfNeeded();
-
-                var isSearchAllowed = string.IsNullOrEmpty(treeView.searchString) || !(m_ProfilerWindow.ProfilerWindowOverheadIsAffectingProfilingRecordingData() && ProfilerDriver.deepProfiling);
-
-                var isDataAvailable = frameDataView != null && frameDataView.valid;
-
-                // Hierarchy view area
-                GUILayout.BeginVertical();
-
-                if (isDataAvailable && (threadIndex != frameDataView.threadIndex || threadName != frameDataView.threadName))
-                    SetFrameDataView(frameDataView);
-
-                DrawToolbar(frameDataView, showDetailedView, ref updateViewLive, viewType);
-
-                if (!string.IsNullOrEmpty(dataAvailabilityMessage))
-                {
-                    GUIStyle style = BaseStyles.label;
-
-                    if (dataAvailabilityMessage.Contains("PlayerSettings."))
-                    {
-                        // Don't do hyperlinks if we're in standalone profiler since we can't easily connect back to the main process.
-                        if (UnityEditor.MPE.ProcessService.level == UnityEditor.MPE.ProcessLevel.Secondary)
-                        {
-                            dataAvailabilityMessage = Regex.Replace(dataAvailabilityMessage, @"\(<a playersettingslink=.*<\/a>\)", "");
-                        }
-                        else
-                        {
-                            style.richText = true;
-                            EditorGUI.hyperLinkClicked -= EditorGUI_OpenSettingsOnHyperlinkClicked;
-                            EditorGUI.hyperLinkClicked += EditorGUI_OpenSettingsOnHyperlinkClicked;
-                        }
-                    }
-
-                    var rect = GUILayoutUtility.GetRect(GUIContent.Temp(dataAvailabilityMessage), style);
-                    EditorGUI.SelectableLabel(rect, dataAvailabilityMessage, style);
-                }
-                else if (!isDataAvailable)
-                {
-                    if (!fetchData && !updateViewLive)
-                        GUILayout.Label(BaseStyles.liveUpdateMessage, BaseStyles.label);
-                    else
-                        GUILayout.Label(BaseStyles.noData, BaseStyles.label);
-                }
-                else if (!isSearchAllowed)
-                {
-                    GUILayout.Label(BaseStyles.disabledSearchText, BaseStyles.label);
-                }
-                else
-                {
-                    var rect = GUILayoutUtility.GetRect(GUIContent.none, GUIStyle.none, GUILayout.ExpandHeight(true), GUILayout.ExpandHeight(true));
-
-                    m_TreeView.SetFrameDataView(frameDataView);
-                    m_TreeView.OnGUI(rect, updateViewLive);
-
-                    if (m_TreeView.HasSelection() && m_TreeView.proxySelectionInfo.hasProxySelection)
-                    {
-                        if (m_TreeView.proxySelectionInfo.cachedDisplayContent == null)
-                        {
-                            var diff = Math.Abs(m_TreeView.proxySelectionInfo.pathLengthDifferenceForProxy);
-                            m_TreeView.proxySelectionInfo.cachedDisplayContent = new GUIContent(
-                                BaseStyles.selectionExtraInfoHierarhcyView + string.Format(
-                                    BaseStyles.proxySampleMessage,
-                                    m_TreeView.proxySelectionInfo.nonProxyName, diff,
-                                    diff == 1 ? BaseStyles.proxySampleMessageScopeSingular : BaseStyles.proxySampleMessageScopePlural),
-                                BaseStyles.warningTriangle.image);
-                        }
-                        GUILayout.BeginHorizontal();
-                        GUILayout.Box(m_TreeView.proxySelectionInfo.cachedDisplayContent, BaseStyles.selectionExtraInfoArea);
-                        var rectForSampleStackButton = GUILayoutUtility.GetRect(BaseStyles.showDetailsDropdownContent, BaseStyles.tooltipDropdown, GUILayout.ExpandHeight(false), GUILayout.ExpandHeight(false));
-                        if (GUI.Button(rectForSampleStackButton, BaseStyles.showDetailsDropdownContent, BaseStyles.tooltipDropdown))
-                        {
-                            var selection = m_TreeView.GetSelection();
-                            var selectedId = (selection != null && selection.Count > 0) ? selection[0] : ProfilerFrameDataHierarchyView.invalidTreeViewId;
-                            if (selectedId >= 0)
-                            {
-                                var menu = new GenericMenu();
-
-                                // Show Sample Selection:
-                                var rawSampleIndices = new List<int>(frameDataView.GetItemMergedSamplesCount(selectedId));
-                                frameDataView.GetItemRawFrameDataViewIndices(selectedId, rawSampleIndices);
-                                var actualMarkerIdPath = new List<int>(frameDataView.GetItemDepth(selectedId));
-                                using (var iterator = new RawFrameDataView(frameDataView.frameIndex, frameDataView.threadIndex))
-                                {
-                                    string name = null;
-                                    var rawIndex = ProfilerTimelineGUI.GetItemMarkerIdPath(iterator, cpuModule, rawSampleIndices[0], ref name, ref actualMarkerIdPath);
-                                }
-
-                                var actualMarkerPath = new List<string>(actualMarkerIdPath.Count);
-                                foreach (var id in actualMarkerIdPath)
-                                {
-                                    if ((frameDataView.GetMarkerFlags(id) & Unity.Profiling.LowLevel.MarkerFlags.AvailabilityEditor) != 0)
-                                        actualMarkerPath.Add(string.Format("EditorOnly [{0}]", frameDataView.GetMarkerName(id)));
-                                    else
-                                        actualMarkerPath.Add(frameDataView.GetMarkerName(id));
-                                }
-
-                                // admittedly, it'd be nice to only generate the text if sample selection option was chosen...
-                                // however, that would need to happen in an OnGui call and not within the callback of the generic menu,
-                                // to be able to calculate the needed window size and avoid glitches on first displaying it.
-                                // at least the user already clicked on the dropdown for this...
-
-                                string selectedSampleStackText = null;
-                                var sampleStackSb = new System.Text.StringBuilder();
-                                if (m_TreeView.proxySelectionInfo.nonProxySampleStack != null && m_TreeView.proxySelectionInfo.nonProxySampleStack.Count > 0)
-                                {
-                                    for (int i = m_TreeView.proxySelectionInfo.nonProxySampleStack.Count - 1; i >= 0; i--)
-                                    {
-                                        sampleStackSb.AppendLine(m_TreeView.proxySelectionInfo.nonProxySampleStack[i]);
-                                    }
-                                    selectedSampleStackText = sampleStackSb.ToString();
-                                }
-                                string actualSampleStackText = null;
-                                if (actualMarkerPath != null && actualMarkerPath.Count > 0)
-                                {
-                                    sampleStackSb.Clear();
-
-                                    for (int i = actualMarkerPath.Count - 1; i >= 0; i--)
-                                    {
-                                        sampleStackSb.AppendLine(actualMarkerPath[i]);
-                                    }
-                                    actualSampleStackText = sampleStackSb.ToString();
-                                }
-
-                                var selectionSampleStackContent = selectedSampleStackText != null ? new GUIContent(selectedSampleStackText) : null;
-                                var actualSampleStackContent = actualSampleStackText != null ? new GUIContent(actualSampleStackText) : null;
-                                var sampleStackWindowSize = SelectedSampleStackWindow.CalculateSize(selectionSampleStackContent, actualSampleStackContent);
-                                menu.AddItem(BaseStyles.showSelectedSampleStacks, false, () =>
-                                {
-                                    SelectedSampleStackWindow.ShowSampleStackWindow(GUIUtility.GUIToScreenRect(rectForSampleStackButton).position, sampleStackWindowSize, selectionSampleStackContent, actualSampleStackContent);
-                                });
-                                menu.DropDown(rectForSampleStackButton);
-                            }
-                        }
-                        GUILayout.EndHorizontal();
-                    }
-                }
-
-                GUILayout.EndVertical();
-
-                if (showDetailedView)
-                {
-                    GUILayout.BeginVertical();
-
-                    // Detailed view area
-                    EditorGUILayout.BeginHorizontal(BaseStyles.toolbar);
-
-                    DrawDetailedViewPopup();
-                    GUILayout.FlexibleSpace();
-
-                    cpuModule.DrawOptionsMenuPopup();
-                    EditorGUILayout.EndHorizontal();
-
-                    switch (m_DetailedViewType)
-                    {
-                        case DetailedViewType.Objects:
-                            detailedObjectsView.DoGUI(BaseStyles.header, frameDataView, m_TreeView.GetSelection());
-                            break;
-                        case DetailedViewType.CallersAndCallees:
-                            detailedCallsView.DoGUI(BaseStyles.header, frameDataView, m_TreeView.GetSelection());
-                            break;
-                    }
-
-                    GUILayout.EndVertical();
-
-                    SplitterGUILayout.EndHorizontalSplit();
-                }
-
-                HandleKeyboardEvents();
+                m_ThreadIndexDuringLastNonLayoutEvent = threadIndexInThreadNames;
+                EditorGUIUtility.ExitGUI();
             }
+            InitIfNeeded();
+
+            var isDataAvailable = frameDataView != null && frameDataView.valid;
+
+            // Hierarchy view area
+            GUILayout.BeginVertical();
+
+            if (isDataAvailable && (threadIndex != frameDataView.threadIndex || threadName != frameDataView.threadName))
+                SetFrameDataView(frameDataView);
+
+            DrawToolbar(frameDataView, updateViewLive, viewType);
+
+            if (!isDataAvailable)
+            {
+                if (!updateViewLive)
+                    GUILayout.Label(BaseStyles.liveUpdateMessage, BaseStyles.label);
+                else
+                    GUILayout.Label(BaseStyles.noData, BaseStyles.label);
+            }
+            else
+            {
+                var rect = GUILayoutUtility.GetRect(GUIContent.none, GUIStyle.none, GUILayout.ExpandHeight(true), GUILayout.ExpandHeight(true));
+
+                m_TreeView.SetFrameDataView(frameDataView);
+                m_TreeView.OnGUI(rect, updateViewLive);
+            }
+
+            GUILayout.EndVertical();
+
+
+
+            HandleKeyboardEvents();
         }
 
         void DrawSearchBar()
@@ -603,23 +410,23 @@ namespace UnityEditorInternal.Profiling
             treeView.searchString = m_SearchField.OnToolbarGUI(rect, treeView.searchString);
         }
 
-        void DrawToolbar(HierarchyFrameDataView frameDataView, ref bool updateViewLive, ProfilerViewType viewType)
+        void DrawToolbar(HierarchyFrameDataView frameDataView, bool updateViewLive, ProfilerViewType viewType)
         {
             EditorGUILayout.BeginHorizontal(BaseStyles.toolbar);
 
             DrawViewTypePopup(viewType);
 
-            DrawLiveUpdateToggle(ref updateViewLive);
-            if (!gpuView)
-            {
-                DrawThreadPopup(frameDataView);
-            }
-
+            DrawLiveUpdateToggle(updateViewLive);
+            DrawThreadPopup(frameDataView);
 
             GUILayout.FlexibleSpace();
 
             if (frameDataView != null && frameDataView.valid)
-                DrawCPUGPUTime(frameDataView.frameTimeMs, frameDataView.frameGpuTimeMs);
+            {
+                var cpuTimeMs = frameDataView.frameTimeMs;
+                var cpuTime = cpuTimeMs > 0 ? $"{cpuTimeMs.ToString("0:N2")}" : "--";
+                GUILayout.Label($"CPU:{cpuTime}ms", EditorStyles.toolbarLabel);
+            }
 
             GUILayout.FlexibleSpace();
 
@@ -779,7 +586,7 @@ namespace UnityEditorInternal.Profiling
         private void DrawThreadPopup(HierarchyFrameDataView frameDataView)
         {
             var style = BaseStyles.threadSelectionToolbarDropDown;
-            var buttonContent = GUIContent.Temp(m_FullThreadName);
+            var buttonContent = new GUIContent(m_FullThreadName);
             float minWidth, maxWidth;
             BaseStyles.threadSelectionToolbarDropDown.CalcMinMaxWidth(buttonContent, out minWidth, out maxWidth);
             var position = GUILayoutUtility.GetRect(buttonContent, style, GUILayout.MinWidth(Math.Max(BaseStyles.detailedViewTypeToolbarDropDown.fixedWidth, minWidth)));
@@ -875,13 +682,6 @@ namespace UnityEditorInternal.Profiling
             }
         }
 
-        void FrameItem(int id)
-        {
-            m_TreeView.SetFocus();
-            m_TreeView.SetSelection(new List<int>(1) { id }, TreeViewSelectionOptions.FireSelectionChanged);
-            m_TreeView.FrameItem(id);
-        }
-
         public void SetSelection(ProfilerTimeSampleSelection selection, bool expandSelection)
         {
             if (selection.markerIdPath == null)
@@ -924,10 +724,6 @@ namespace UnityEditorInternal.Profiling
 
         public override void Clear()
         {
-            if (m_DetailedObjectsView != null)
-                m_DetailedObjectsView.Clear();
-            if (m_DetailedCallsView != null)
-                m_DetailedCallsView.Clear();
             if (m_TreeView != null)
             {
                 if (m_TreeView.multiColumnHeader != null)
@@ -939,25 +735,9 @@ namespace UnityEditorInternal.Profiling
             }
         }
 
-        public void SaveViewSettings()
-        {
-            if (m_DetailedViewSpliterState != null && m_DetailedViewSpliterState.relativeSizes != null && m_DetailedViewSpliterState.relativeSizes.Length >= 2)
-            {
-                SessionState.SetFloat(splitter0StatePrefKey, m_DetailedViewSpliterState.relativeSizes[0]);
-                SessionState.SetFloat(splitter1StatePrefKey, m_DetailedViewSpliterState.relativeSizes[1]);
-            }
-            SessionState.SetInt(detailedViewTypeStatePrefKey, (int)m_DetailedViewType);
-
-            if (m_DetailedObjectsView != null)
-                m_DetailedObjectsView.SaveViewSettings();
-            if (m_DetailedCallsView != null)
-                m_DetailedCallsView.SaveViewSettings();
-        }
-
         public override void OnDisable()
         {
             base.OnDisable();
-            SaveViewSettings();
             m_ProfilerWindow.frameDataViewAboutToBeDisposed -= OnFrameDataViewAboutToBeDisposed;
             if (m_TreeView != null)
             {
@@ -967,10 +747,6 @@ namespace UnityEditorInternal.Profiling
                     m_TreeView.multiColumnHeader.sortingChanged -= OnMultiColumnHeaderChanged;
                 }
             }
-            if (m_DetailedObjectsView != null)
-                m_DetailedObjectsView.OnDisable();
-            if (m_DetailedCallsView != null)
-                m_DetailedCallsView.OnDisable();
         }
     }
 }
