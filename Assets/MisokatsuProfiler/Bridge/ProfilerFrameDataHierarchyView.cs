@@ -13,6 +13,8 @@ namespace UnityEditorInternal.Profiling
     [Serializable]
     internal class ProfilerFrameDataHierarchyView : ProfilerFrameDataViewBase
     {
+        public event Action OnThreadSelectionChange = () => { };
+
         public const int invalidTreeViewId = -1;
         public const int invalidTreeViewDepth = -1;
 
@@ -363,7 +365,7 @@ namespace UnityEditorInternal.Profiling
             }
         }
 
-        public void DoGUI(HierarchyFrameDataView frameDataView, ref bool updateViewLive, ProfilerViewType viewType)
+        public void DoGUI(HierarchyFrameDataView frameDataView, bool isLive, ProfilerViewType viewType)
         {
             if (Event.current.type != EventType.Layout && m_ThreadIndexDuringLastNonLayoutEvent != threadIndexInThreadNames)
             {
@@ -380,11 +382,11 @@ namespace UnityEditorInternal.Profiling
             if (isDataAvailable && (threadIndex != frameDataView.threadIndex || threadName != frameDataView.threadName))
                 SetFrameDataView(frameDataView);
 
-            DrawToolbar(frameDataView, updateViewLive, viewType);
+            DrawToolbar(frameDataView, isLive, viewType);
 
             if (!isDataAvailable)
             {
-                if (!updateViewLive)
+                if (!isLive)
                     GUILayout.Label(BaseStyles.liveUpdateMessage, BaseStyles.label);
                 else
                     GUILayout.Label(BaseStyles.noData, BaseStyles.label);
@@ -394,7 +396,7 @@ namespace UnityEditorInternal.Profiling
                 var rect = GUILayoutUtility.GetRect(GUIContent.none, GUIStyle.none, GUILayout.ExpandHeight(true), GUILayout.ExpandHeight(true));
 
                 m_TreeView.SetFrameDataView(frameDataView);
-                m_TreeView.OnGUI(rect, updateViewLive);
+                m_TreeView.OnGUI(rect, isLive);
             }
 
             GUILayout.EndVertical();
@@ -431,8 +433,6 @@ namespace UnityEditorInternal.Profiling
             GUILayout.FlexibleSpace();
 
             DrawSearchBar();
-
-            cpuModule?.DrawOptionsMenuPopup();
 
             EditorGUILayout.EndHorizontal();
         }
@@ -625,7 +625,7 @@ namespace UnityEditorInternal.Profiling
                 if (m_ThreadInfoCache != null && newThreadIndex < m_ThreadInfoCache.Count)
                     actualThreadIndex = m_ThreadInfoCache[newThreadIndex].threadIndex;
                 userChangedThread(m_GroupName, m_ThreadName, actualThreadIndex);
-                cpuModule.Repaint();
+                OnThreadSelectionChange.Invoke();
             }
         }
 
