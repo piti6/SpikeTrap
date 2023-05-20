@@ -111,18 +111,6 @@ namespace UnityEditorInternal.Profiling
             (int)ProfilerViewType.RawHierarchy
         };
 
-        protected IProfilerWindowController m_ProfilerWindow;
-
-        public CPUOrGPUProfilerModule cpuModule { get; private set; }
-
-        
-
-        public virtual void OnEnable(CPUOrGPUProfilerModule cpuOrGpuModule, IProfilerWindowController profilerWindow)
-        {
-            m_ProfilerWindow = profilerWindow;
-            cpuModule = cpuOrGpuModule;
-        }
-
         public virtual void OnDisable()
         {
         }
