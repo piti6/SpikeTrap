@@ -62,15 +62,15 @@ namespace LightningProfiler
 
         private static readonly string[] CPUNames = new string[]
         {
-        "Rendering",
-        "Scripts",
-        "Physics",
-        "Animation",
-        "GarbageCollector",
-        "VSync",
-        "Global Illumination",
-        "UI",
-        "Others"
+            "Rendering",
+            "Scripts",
+            "Physics",
+            "Animation",
+            "GarbageCollector",
+            "VSync",
+            "Global Illumination",
+            "UI",
+            "Others"
         };
 
         public MisokatsuProfilerModule() : base(CPUNames.Select(x => new ProfilerCounterDescriptor(x, ProfilerCategory.Scripts.Name)).ToArray()) { }
@@ -88,34 +88,28 @@ namespace LightningProfiler
             return viewController;
         }
 
+        internal override void Clear()
+        {
+            base.Clear();
+
+            m_currentFrameIndex = FrameDataView.invalidOrCurrentFrameIndex;
+            m_FrameDataHierarchyView?.Clear();
+        }
+
         internal override void OnEnable()
         {
             base.OnEnable();
+
             if (m_FrameDataHierarchyView == null)
-                m_FrameDataHierarchyView = new ProfilerFrameDataHierarchyView("Profiler.CPUProfilerModule.HierarchyView.");
+                m_FrameDataHierarchyView = new ProfilerFrameDataHierarchyView();
 
             m_FrameDataHierarchyView.OnEnable(ProfilerWindow);
 
             m_FrameDataHierarchyView.OnChangeViewType -= OnChangeViewType;
             m_FrameDataHierarchyView.OnChangeViewType += OnChangeViewType;
 
-            void OnChangeViewType(ProfilerViewType viewtype)
-            {
-                if (m_viewType == viewtype)
-                    return;
-
-                m_viewType = viewtype;
-
-                ApplySelection(true, true);
-            }
-
             m_FrameDataHierarchyView.OnToggleLive -= OnToggleLive;
             m_FrameDataHierarchyView.OnToggleLive += OnToggleLive;
-
-            void OnToggleLive(bool isLive)
-            {
-                m_isLive = isLive;
-            }
 
             m_FrameDataHierarchyView.selectionChanged -= SetSelectionWithoutIntegrityChecksOnSelectionChangeInDetailedView;
             m_FrameDataHierarchyView.selectionChanged += SetSelectionWithoutIntegrityChecksOnSelectionChangeInDetailedView;
@@ -126,6 +120,38 @@ namespace LightningProfiler
             ProfilerDriver.profileCleared += ProfileCleared;
 
             m_viewType = (ProfilerViewType)EditorPrefs.GetInt("Profiler.CPUProfilerModule.ViewType", (int)ProfilerViewType.Hierarchy);
+        }
+
+        private void OnChangeViewType(ProfilerViewType viewtype)
+        {
+            if (m_viewType == viewtype)
+                return;
+
+            m_viewType = viewtype;
+
+            ApplySelection(true, true);
+        }
+
+        private void OnToggleLive(bool isLive)
+        {
+            m_isLive = isLive;
+        }
+
+        internal override void OnDisable()
+        {
+            base.OnDisable();
+
+            if (m_FrameDataHierarchyView != null)
+            {
+                m_FrameDataHierarchyView.OnDisable();
+                m_FrameDataHierarchyView.OnChangeViewType -= OnChangeViewType;
+                m_FrameDataHierarchyView.OnToggleLive -= OnToggleLive;
+                m_FrameDataHierarchyView.selectionChanged -= SetSelectionWithoutIntegrityChecksOnSelectionChangeInDetailedView;
+            }
+
+            ProfilerDriver.profileLoaded -= ProfileLoaded;
+            ProfilerDriver.profileCleared -= ProfileCleared;
+            Clear();
         }
 
         protected void TryRestoringSelection()
@@ -143,7 +169,7 @@ namespace LightningProfiler
                 {
                     ApplySelection(true, true);
                 }
-                SetSelectedPropertyPath(selection.legacyMarkerPath, selection.threadName);
+                SetSelectedPropertyPath(selection.legacyMarkerPath);
             }
         }
 
@@ -194,7 +220,7 @@ namespace LightningProfiler
                     selectionToSet.GenerateMarkerNamePath(frameDataView, markerIdPath);
                 }
                 selection = selectionToSet;
-                SetSelectedPropertyPath(selectionToSet.legacyMarkerPath, selectionToSet.threadName);
+                SetSelectedPropertyPath(selectionToSet.legacyMarkerPath);
             }
             else
             {
@@ -203,7 +229,7 @@ namespace LightningProfiler
             }
         }
 
-        private void SetSelectedPropertyPath(string path, string threadName)
+        private void SetSelectedPropertyPath(string path)
         {
             if (ProfilerDriver.selectedPropertyPath != path)
             {
@@ -250,15 +276,6 @@ namespace LightningProfiler
                 viewMode |= HierarchyFrameDataView.ViewModes.MergeSamplesWithTheSameName;
             //return ProfilerWindow.GetFrameDataView(threadIndex, viewMode | GetFilteringMode(), m_FrameDataHierarchyView.sortedProfilerColumn, m_FrameDataHierarchyView.sortedProfilerColumnAscending);
             return ProfilerWindow.GetFrameDataView(threadGroupName, threadName, threadId, viewMode, HierarchyFrameDataView.columnDontSort, false);
-        }
-
-        private HierarchyFrameDataView GetFrameDataView(int threadIndex)
-        {
-            var viewMode = HierarchyFrameDataView.ViewModes.Default;
-            if (m_viewType == ProfilerViewType.Hierarchy)
-                viewMode |= HierarchyFrameDataView.ViewModes.MergeSamplesWithTheSameName;
-            //return ProfilerWindow.GetFrameDataView(threadIndex, viewMode | GetFilteringMode(), m_FrameDataHierarchyView.sortedProfilerColumn, m_FrameDataHierarchyView.sortedProfilerColumnAscending);
-            return ProfilerWindow.GetFrameDataView(threadIndex, viewMode, HierarchyFrameDataView.columnDontSort, false);
         }
 
         private void ApplySelection(bool viewChanged, bool frameSelection)

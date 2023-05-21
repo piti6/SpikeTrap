@@ -8,6 +8,7 @@ using UnityEditor.MPE;
 using UnityEditor.Profiling;
 using UnityEditorInternal.Profiling;
 using UnityEditorInternal;
+using System.Linq;
 
 namespace LightningProfiler
 {
@@ -99,8 +100,6 @@ namespace LightningProfiler
 
         private IProfilerWindowController m_profilerWindow;
 
-        private bool m_Initialized;
-
         [SerializeField]
         private int m_FrameIndex = FrameDataView.invalidOrCurrentFrameIndex;
 
@@ -148,7 +147,7 @@ namespace LightningProfiler
 
                 if (newUpdateViewLive != updateViewLive)
                 {
-                    OnToggleLive.Invoke(updateViewLive);
+                    OnToggleLive.Invoke(newUpdateViewLive);
                 }
             }
         }
@@ -159,7 +158,6 @@ namespace LightningProfiler
         {
             get
             {
-                InitIfNeeded();
                 return m_TreeView;
             }
         }
@@ -185,38 +183,19 @@ namespace LightningProfiler
         public delegate void SearchChangedCallback(string newSearch);
         public event SearchChangedCallback searchChanged;
 
-        readonly string k_SerializationPrefKeyPrefix;
-        string multiColumnHeaderStatePrefKey => k_SerializationPrefKeyPrefix + "MultiColumnHeaderState";
+        private const string m_multiColumnHeaderStatePrefKey = "Profiler.CPUProfilerModule.HierarchyView.MultiColumnHeaderState";
 
-        public ProfilerFrameDataHierarchyView(string serializationPrefKeyPrefix)
+        private bool m_Initialized;
+
+        public ProfilerFrameDataHierarchyView() { }
+
+        public void OnEnable(IProfilerWindowController profilerWindow)
         {
-            m_Initialized = false;
-            k_SerializationPrefKeyPrefix = serializationPrefKeyPrefix;
-        }
+            m_profilerWindow = profilerWindow;
+            m_profilerWindow.frameDataViewAboutToBeDisposed += OnFrameDataViewAboutToBeDisposed;
+            m_FrameIndex = FrameDataView.invalidOrCurrentFrameIndex;
 
-        void InitIfNeeded()
-        {
-            if (m_Initialized)
-                return;
-
-            var cpuHierarchyColumns = new[]
-            {
-                HierarchyFrameDataView.columnName,
-                HierarchyFrameDataView.columnTotalPercent,
-                HierarchyFrameDataView.columnSelfPercent,
-                HierarchyFrameDataView.columnCalls,
-                HierarchyFrameDataView.columnGcMemory,
-                HierarchyFrameDataView.columnTotalTime,
-                HierarchyFrameDataView.columnSelfTime,
-                HierarchyFrameDataView.columnWarningCount
-            };
-
-            var profilerColumns = cpuHierarchyColumns;
-            var defaultSortColumn = HierarchyFrameDataView.columnTotalTime;
-
-            var columns = CreateColumns(profilerColumns);
-
-            var multiColumnHeaderStateData = SessionState.GetString(multiColumnHeaderStatePrefKey, "");
+            var multiColumnHeaderStateData = SessionState.GetString(m_multiColumnHeaderStatePrefKey, "");
             if (!string.IsNullOrEmpty(multiColumnHeaderStateData))
             {
                 try
@@ -227,14 +206,14 @@ namespace LightningProfiler
                 }
                 catch { } // Nevermind, we'll just fall back to the default
             }
-            var headerState = CreateDefaultMultiColumnHeaderState(columns, defaultSortColumn);
+            var headerState = CreateDefaultMultiColumnHeaderState(cpuHierarchyColumns, HierarchyFrameDataView.columnTotalTime);
             if (MultiColumnHeaderState.CanOverwriteSerializedFields(m_MultiColumnHeaderState, headerState))
                 MultiColumnHeaderState.OverwriteSerializedFields(m_MultiColumnHeaderState, headerState);
 
             var firstInit = m_MultiColumnHeaderState == null;
             m_MultiColumnHeaderState = headerState;
 
-            var multiColumnHeader = new ProfilerFrameDataMultiColumnHeader(m_MultiColumnHeaderState, columns) { height = 25 };
+            var multiColumnHeader = new ProfilerFrameDataMultiColumnHeader(m_MultiColumnHeaderState, cpuHierarchyColumns) { height = 25 };
             if (firstInit)
                 multiColumnHeader.ResizeToFit();
 
@@ -255,13 +234,6 @@ namespace LightningProfiler
             m_Initialized = true;
         }
 
-        public void OnEnable(IProfilerWindowController profilerWindow)
-        {
-            m_profilerWindow = profilerWindow;
-            m_FrameIndex = FrameDataView.invalidOrCurrentFrameIndex;
-            profilerWindow.frameDataViewAboutToBeDisposed += OnFrameDataViewAboutToBeDisposed;
-        }
-
         void OnFrameDataViewAboutToBeDisposed()
         {
             m_TreeView?.OnFrameDataViewAboutToBeDisposed();
@@ -269,28 +241,27 @@ namespace LightningProfiler
 
         void OnMultiColumnHeaderChanged(MultiColumnHeader header)
         {
-            SessionState.SetString(multiColumnHeaderStatePrefKey, JsonUtility.ToJson(header.state));
+            SessionState.SetString(m_multiColumnHeaderStatePrefKey, JsonUtility.ToJson(header.state));
         }
 
-        public static ProfilerFrameDataMultiColumnHeader.Column[] CreateColumns(int[] profilerColumns)
+        private static readonly ProfilerFrameDataMultiColumnHeader.Column[] cpuHierarchyColumns = new[]
         {
-            var columns = new ProfilerFrameDataMultiColumnHeader.Column[profilerColumns.Length];
-            for (var i = 0; i < profilerColumns.Length; ++i)
+            HierarchyFrameDataView.columnName,
+            HierarchyFrameDataView.columnTotalPercent,
+            HierarchyFrameDataView.columnSelfPercent,
+            HierarchyFrameDataView.columnCalls,
+            HierarchyFrameDataView.columnGcMemory,
+            HierarchyFrameDataView.columnTotalTime,
+            HierarchyFrameDataView.columnSelfTime,
+            HierarchyFrameDataView.columnWarningCount
+        }.Select(x =>
+        {
+            return new ProfilerFrameDataMultiColumnHeader.Column
             {
-                var columnName = GetProfilerColumnName(profilerColumns[i]);
-                var content = profilerColumns[i] == HierarchyFrameDataView.columnWarningCount
-                    ? EditorGUIUtility.IconContent("ProfilerColumn.WarningCount", columnName)
-                    : new GUIContent(columnName);
-                var column = new ProfilerFrameDataMultiColumnHeader.Column
-                {
-                    profilerColumn = profilerColumns[i],
-                    headerLabel = content
-                };
-                columns[i] = column;
-            }
-
-            return columns;
-        }
+                profilerColumn = x,
+                headerLabel = new GUIContent(GetProfilerColumnName(x))
+            };
+        }).ToArray();
 
         public static MultiColumnHeaderState CreateDefaultMultiColumnHeaderState(ProfilerFrameDataMultiColumnHeader.Column[] columns, int defaultSortColumn)
         {
@@ -368,7 +339,7 @@ namespace LightningProfiler
                 case HierarchyFrameDataView.columnSelfGpuPercent:
                     return LocalizationDatabase.GetLocalizedString("Self");
                 case HierarchyFrameDataView.columnWarningCount:
-                    return LocalizationDatabase.GetLocalizedString("|Warnings");
+                    return LocalizationDatabase.GetLocalizedString("Warnings");
                 case HierarchyFrameDataView.columnObjectName:
                     return LocalizationDatabase.GetLocalizedString("Object Name");
                 case HierarchyFrameDataView.columnStartTime:
@@ -378,30 +349,8 @@ namespace LightningProfiler
             }
         }
 
-        // Open hyperlinks directing users to specific settings in the Player Settings window.
-        static void EditorGUI_OpenSettingsOnHyperlinkClicked(EditorWindow window, HyperLinkClickedEventArgs args)
-        {
-            if (window.GetType() == typeof(ProfilerWindow) && args.hyperLinkData.ContainsKey("playersettingslink"))
-            {
-                var settings = SettingsWindow.Show(SettingsScope.Project, "Project/Player");
-                if (settings == null)
-                {
-                    Debug.LogError("Could not find Preferences for 'Project/Player'");
-                }
-                else
-                {
-                    string linkString;
-                    args.hyperLinkData.TryGetValue("playersettingssearchstring", out linkString);
-
-                    settings.FilterProviders(linkString);
-                }
-            }
-        }
-
         public void DoGUI(HierarchyFrameDataView frameDataView, bool isLive, ProfilerViewType viewType)
         {
-            InitIfNeeded();
-
             var isDataAvailable = frameDataView != null && frameDataView.valid;
 
             // Hierarchy view area
@@ -449,7 +398,7 @@ namespace LightningProfiler
             if (frameDataView != null && frameDataView.valid)
             {
                 var cpuTimeMs = frameDataView.frameTimeMs;
-                var cpuTime = cpuTimeMs > 0 ? $"{cpuTimeMs.ToString("0:N2")}" : "--";
+                var cpuTime = cpuTimeMs > 0 ? $"{cpuTimeMs:N2}" : "--";
                 GUILayout.Label($"CPU:{cpuTime}ms", EditorStyles.toolbarLabel);
             }
 
@@ -458,79 +407,6 @@ namespace LightningProfiler
             DrawSearchBar();
 
             EditorGUILayout.EndHorizontal();
-        }
-
-        class ThreadInfo : IComparable<ThreadInfo>, IEquatable<ThreadInfo>
-        {
-            public int groupOrder;
-            public string fullName;
-            public int threadIndex;
-
-            public int CompareTo(ThreadInfo other)
-            {
-                if (this == other)
-                    return 0;
-                if (groupOrder != other.groupOrder)
-                    return groupOrder - other.groupOrder;
-                return EditorUtility.NaturalCompare(fullName, other.fullName);
-            }
-
-            public static bool operator ==(ThreadInfo lhs, ThreadInfo rhs) => ReferenceEquals(lhs, null) && ReferenceEquals(rhs, null) || !ReferenceEquals(lhs, null) && lhs.Equals(rhs);
-            public static bool operator !=(ThreadInfo lhs, ThreadInfo rhs) => ReferenceEquals(lhs, null) ? !ReferenceEquals(rhs, null) : !lhs.Equals(rhs);
-            public override int GetHashCode() => (fullName.GetHashCode() * 21 + groupOrder.GetHashCode()) * 21 + threadIndex.GetHashCode();
-            public override bool Equals(object other) => other is ThreadInfo && Equals((ThreadInfo)other);
-            public bool Equals(ThreadInfo other) => !ReferenceEquals(other, null) && (ReferenceEquals(this, other) || (groupOrder == other.groupOrder && fullName == other.fullName && threadIndex == other.threadIndex));
-        }
-
-        class ProfilerThreadSelectionDropdown : AdvancedDropdown
-        {
-            class ProfilerThreadSelectionDropDownItem : AdvancedDropdownItem
-            {
-                public ThreadInfo info;
-                public ProfilerThreadSelectionDropDownItem(ThreadInfo info) : base(info.fullName)
-                {
-                    this.info = info;
-                    id = info.GetHashCode();
-                }
-            }
-
-            int m_SelectedThreadIndexInListOfThreadNames;
-            List<ThreadInfo> m_ThreadInfos;
-            Action<ThreadInfo, int> m_ItemSelectedCallback;
-            public ProfilerThreadSelectionDropdown(List<ThreadInfo> threads, int selectedThreadIndexInListOfThreadNames, Action<ThreadInfo, int> itemSelected) : base(new AdvancedDropdownState())
-            {
-                m_ThreadInfos = threads;
-                m_SelectedThreadIndexInListOfThreadNames = selectedThreadIndexInListOfThreadNames;
-                m_ItemSelectedCallback = itemSelected;
-            }
-
-            protected override AdvancedDropdownItem BuildRoot()
-            {
-                AdvancedDropdownItem root = null;
-                if (m_ThreadInfos != null && m_ThreadInfos.Count > 0)
-                {
-                    if (m_ThreadInfos.Count < m_SelectedThreadIndexInListOfThreadNames || m_SelectedThreadIndexInListOfThreadNames < 0)
-                        m_SelectedThreadIndexInListOfThreadNames = 0;
-
-                    root = new ProfilerThreadSelectionDropDownItem(m_ThreadInfos[m_SelectedThreadIndexInListOfThreadNames]);
-                    for (int i = 0; i < m_ThreadInfos.Count; i++)
-                    {
-                        var child = new ProfilerThreadSelectionDropDownItem(m_ThreadInfos[i]);
-                        child.elementIndex = i;
-                        root.AddChild(child);
-
-                        if (m_SelectedThreadIndexInListOfThreadNames == i)
-                            m_DataSource.selectedIDs.Add(child.id);
-                    }
-                }
-                return root;
-            }
-
-            protected override void ItemSelected(AdvancedDropdownItem item)
-            {
-                base.ItemSelected(item);
-                m_ItemSelectedCallback?.Invoke((item as ProfilerThreadSelectionDropDownItem).info, item.elementIndex);
-            }
         }
 
         void HandleKeyboardEvents()
@@ -600,20 +476,16 @@ namespace LightningProfiler
             {
                 throw new ArgumentException($"ProfilerFrameDataHierarchyView.SetSelectionFromMarkerIDPath needs to be called with {nameof(selection)} having {nameof(selection.markerIdPath)} and {nameof(selection.markerNamePath)} with the same amount of elements.");
             }
-            InitIfNeeded();
             m_TreeView.SetSelection(selection, expandSelection);
         }
 
         public void ClearSelection()
         {
-            InitIfNeeded();
             m_TreeView.ClearSelection();
         }
 
         public void SetFrameDataView(HierarchyFrameDataView frameDataView)
         {
-            InitIfNeeded();
-
             m_TreeView.SetFrameDataView(frameDataView);
             m_frameDataView = frameDataView;
             m_FrameIndex = frameDataView.frameIndex;
