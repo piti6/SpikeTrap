@@ -1,18 +1,14 @@
-using PlasticGui;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using Unity.Profiling;
 using Unity.Profiling.Editor;
 using UnityEditor;
-using UnityEditor.Experimental.GraphView;
 using UnityEditor.IMGUI.Controls;
 using UnityEditor.Profiling;
 using UnityEditorInternal;
-using UnityEditorInternal.Profiling;
 using UnityEngine;
 using UnityEngine.UIElements;
-using static UnityEditor.Progress;
 
 namespace LightningProfiler
 {
@@ -73,7 +69,7 @@ namespace LightningProfiler
             "Others"
         };
 
-        public MisokatsuProfilerModule() : base(CPUNames.Select(x => new ProfilerCounterDescriptor(x, ProfilerCategory.Scripts.Name)).ToArray()) { }
+        public MisokatsuProfilerModule() : base(CPUNames.Select(x => new ProfilerCounterDescriptor(x, ProfilerCategory.Scripts.Name)).ToArray(), ProfilerModuleChartType.StackedTimeArea) { }
         public MisokatsuProfilerModule
             (ProfilerCounterDescriptor[] chartCounters, ProfilerModuleChartType defaultChartType = ProfilerModuleChartType.Line, string[] autoEnabledCategoryNames = null) : base(chartCounters, defaultChartType, autoEnabledCategoryNames)
         {
@@ -271,11 +267,14 @@ namespace LightningProfiler
 
         private HierarchyFrameDataView GetFrameDataView(string threadGroupName, string threadName, ulong threadId)
         {
+            UnityEngine.Profiling.Profiler.BeginSample("ccc");
             var viewMode = HierarchyFrameDataView.ViewModes.Default;
             if (m_viewType == ProfilerViewType.Hierarchy)
                 viewMode |= HierarchyFrameDataView.ViewModes.MergeSamplesWithTheSameName;
             //return ProfilerWindow.GetFrameDataView(threadIndex, viewMode | GetFilteringMode(), m_FrameDataHierarchyView.sortedProfilerColumn, m_FrameDataHierarchyView.sortedProfilerColumnAscending);
-            return ProfilerWindow.GetFrameDataView(threadGroupName, threadName, threadId, viewMode, HierarchyFrameDataView.columnDontSort, false);
+            var frameDataView = ProfilerWindow.GetFrameDataView(threadGroupName, threadName, threadId, viewMode, HierarchyFrameDataView.columnDontSort, false);
+            UnityEngine.Profiling.Profiler.EndSample();
+            return frameDataView;
         }
 
         private void ApplySelection(bool viewChanged, bool frameSelection)
