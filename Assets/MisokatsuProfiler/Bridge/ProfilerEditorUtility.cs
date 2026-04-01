@@ -1,12 +1,8 @@
-#region 어셈블리 UnityEditor.CoreModule, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null
-// 위치를 알 수 없음
-// Decompiled with ICSharpCode.Decompiler 6.1.0.5902
-#endregion
-
 using System;
 using System.Collections.Generic;
+using Unity.Profiling.Editor;
 using UnityEditor.Profiling;
-using UnityEditorInternal.Profiling;
+using UnityEditorInternal;
 
 namespace LightningProfiler
 {
@@ -106,14 +102,14 @@ namespace LightningProfiler
 
             List<int> markerIdPath;
             ProfilerTimeSampleSelection profilerTimeSampleSelection;
-            using (CPUOrGPUProfilerModule.setSelectionIntegrityCheckMarker.Auto())
+            using (CpuOrGpuSelectionHelper.SetSelectionIntegrityCheckMarker.Auto())
             {
                 if (string.IsNullOrEmpty(sampleName))
                 {
                     throw new ArgumentException("sampleName can't be null or empty. Hint: To clear a selection, use ClearSelection instead.");
                 }
 
-                int threadIndex = CPUOrGPUProfilerModule.IntegrityCheckFrameAndThreadDataOfSelection(frameIndex, threadGroupName, threadName, ref threadId);
+                int threadIndex = CpuOrGpuSelectionHelper.IntegrityCheckFrameAndThreadDataOfSelection(frameIndex, threadGroupName, threadName, ref threadId);
                 int num = profilerFrameTimeViewSampleSelectionControllerInternal.FindMarkerPathAndRawSampleIndexToFirstMatchingSampleInCurrentView((int)frameIndex, threadIndex, sampleName, out markerIdPath, markerNamePath);
                 if (num < 0)
                 {
@@ -123,7 +119,7 @@ namespace LightningProfiler
                 profilerTimeSampleSelection = new ProfilerTimeSampleSelection(frameIndex, threadGroupName, threadName, threadId, num, sampleName);
             }
 
-            using (CPUOrGPUProfilerModule.setSelectionApplyMarker.Auto())
+            using (CpuOrGpuSelectionHelper.SetSelectionApplyMarker.Auto())
             {
                 profilerTimeSampleSelection.frameIndexIsSafe = true;
                 profilerFrameTimeViewSampleSelectionControllerInternal.SetSelectionWithoutIntegrityChecks(profilerTimeSampleSelection, markerIdPath);
@@ -140,14 +136,14 @@ namespace LightningProfiler
             }
 
             ProfilerTimeSampleSelection profilerTimeSampleSelection;
-            using (CPUOrGPUProfilerModule.setSelectionIntegrityCheckMarker.Auto())
+            using (CpuOrGpuSelectionHelper.SetSelectionIntegrityCheckMarker.Auto())
             {
                 if (sampleMarkerId == -1)
                 {
                     throw new ArgumentException(string.Format("{0} can't invalid ({1}). Hint: To clear a selection, use {2} instead.", "sampleMarkerId", -1, "ClearSelection"));
                 }
 
-                int threadIndex = CPUOrGPUProfilerModule.IntegrityCheckFrameAndThreadDataOfSelection(frameIndex, threadGroupName, threadName, ref threadId);
+                int threadIndex = CpuOrGpuSelectionHelper.IntegrityCheckFrameAndThreadDataOfSelection(frameIndex, threadGroupName, threadName, ref threadId);
                 string sampleName = null;
                 int num = profilerFrameTimeViewSampleSelectionControllerInternal.FindMarkerPathAndRawSampleIndexToFirstMatchingSampleInCurrentView((int)frameIndex, threadIndex, ref sampleName, ref markerIdPath, sampleMarkerId);
                 if (num < 0)
@@ -158,7 +154,7 @@ namespace LightningProfiler
                 profilerTimeSampleSelection = new ProfilerTimeSampleSelection(frameIndex, threadGroupName, threadName, threadId, num, sampleName);
             }
 
-            using (CPUOrGPUProfilerModule.setSelectionApplyMarker.Auto())
+            using (CpuOrGpuSelectionHelper.SetSelectionApplyMarker.Auto())
             {
                 profilerTimeSampleSelection.frameIndexIsSafe = true;
                 profilerFrameTimeViewSampleSelectionControllerInternal.SetSelectionWithoutIntegrityChecks(profilerTimeSampleSelection, markerIdPath);
@@ -219,7 +215,7 @@ namespace LightningProfiler
 
             List<int> markerIdPath;
             ProfilerTimeSampleSelection profilerTimeSampleSelection;
-            using (CPUOrGPUProfilerModule.setSelectionIntegrityCheckMarker.Auto())
+            using (CpuOrGpuSelectionHelper.SetSelectionIntegrityCheckMarker.Auto())
             {
                 if (string.IsNullOrEmpty(markerNameOrMarkerNamePath))
                 {
@@ -231,7 +227,7 @@ namespace LightningProfiler
                     frameIndex = profilerFrameTimeViewSampleSelectionControllerInternal.GetActiveVisibleFrameIndexOrLatestFrameForSettingTheSelection();
                 }
 
-                int num = CPUOrGPUProfilerModule.IntegrityCheckFrameAndThreadDataOfSelection(frameIndex, threadGroupName, threadName, ref threadId);
+                int resolvedThreadIndex = CpuOrGpuSelectionHelper.IntegrityCheckFrameAndThreadDataOfSelection(frameIndex, threadGroupName, threadName, ref threadId);
                 int num2 = markerNameOrMarkerNamePath.LastIndexOf('/');
                 string sampleName = (num2 == -1) ? markerNameOrMarkerNamePath : markerNameOrMarkerNamePath.Substring(num2 + 1, markerNameOrMarkerNamePath.Length - (num2 + 1));
                 if (num2 == -1)
@@ -239,16 +235,17 @@ namespace LightningProfiler
                     markerNameOrMarkerNamePath = null;
                 }
 
-                int num3 = profilerFrameTimeViewSampleSelectionControllerInternal.FindMarkerPathAndRawSampleIndexToFirstMatchingSampleInCurrentView((int)frameIndex, 0, sampleName, out markerIdPath, markerNameOrMarkerNamePath);
-                if (num3 < 0)
+                int rawSampleIndex = profilerFrameTimeViewSampleSelectionControllerInternal.FindMarkerPathAndRawSampleIndexToFirstMatchingSampleInCurrentView(
+                    (int)frameIndex, resolvedThreadIndex, sampleName, out markerIdPath, markerNameOrMarkerNamePath);
+                if (rawSampleIndex < 0)
                 {
                     return false;
                 }
 
-                profilerTimeSampleSelection = new ProfilerTimeSampleSelection(frameIndex, threadGroupName, threadName, threadId, num3, sampleName);
+                profilerTimeSampleSelection = new ProfilerTimeSampleSelection(frameIndex, threadGroupName, threadName, threadId, rawSampleIndex, sampleName);
             }
 
-            using (CPUOrGPUProfilerModule.setSelectionApplyMarker.Auto())
+            using (CpuOrGpuSelectionHelper.SetSelectionApplyMarker.Auto())
             {
                 profilerTimeSampleSelection.frameIndexIsSafe = true;
                 profilerFrameTimeViewSampleSelectionControllerInternal.SetSelectionWithoutIntegrityChecks(profilerTimeSampleSelection, markerIdPath);

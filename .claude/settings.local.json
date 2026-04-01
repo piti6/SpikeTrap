@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs grep:*)",
+      "mcp__uLoopMCP__screenshot",
+      "Bash(uloop compile:*)",
+      "mcp__uLoopMCP__control-play-mode",
+      "mcp__uLoopMCP__execute-dynamic-code",
+      "Bash(ls C:/LightningProfiler/Assets/Editor* C:/LightningProfiler/Assets/Scripts*)",
+      "Bash(ls C:/LightningProfiler/Assets/MisokatsuProfiler/Bridge/*.cs)",
+      "Bash(uloop get-logs:*)",
+      "Bash(uloop control-play-mode:*)",
+      "Bash(uloop screenshot:*)"
+    ]
+  },
+  "enabledMcpjsonServers": [
+    "uLoopMCP"
+  ]
+}

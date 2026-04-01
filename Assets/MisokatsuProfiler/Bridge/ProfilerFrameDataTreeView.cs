@@ -231,8 +231,21 @@ namespace LightningProfiler
 
             if (needReload)
             {
+                var frameChanged = m_FrameDataView != null && frameDataView != null &&
+                    m_FrameDataView.valid && frameDataView.valid &&
+                    m_FrameDataView.frameIndex != frameDataView.frameIndex;
+
                 StoreExpandedState();
-                StoreSelectedState();
+
+                if (frameChanged)
+                {
+                    // Don't migrate selection across frames — clear it instead.
+                    ClearSelection();
+                }
+                else
+                {
+                    StoreSelectedState();
+                }
             }
 
             m_FrameDataView = frameDataView;
@@ -413,14 +426,14 @@ namespace LightningProfiler
 
                     if (allowProxySelection || rawHierarchyView)
                     {
-                        finalRawSampleIndex = ProfilerTimelineGUI.FindFirstSampleThroughMarkerPath(
+                        finalRawSampleIndex = MarkerPathTraversal.FindFirstSampleThroughMarkerPath(
                             frameData, m_ProfilerSampleNameProvider,
                             m_LocalSelectedItemMarkerIdPath, markerNamePath.Count, ref name,
                             longestMatchingPath: m_CachedDeepestRawSampleIndexPath);
                     }
                     else
                     {
-                        finalRawSampleIndex = ProfilerTimelineGUI.FindNextSampleThroughMarkerPath(
+                        finalRawSampleIndex = MarkerPathTraversal.FindNextSampleThroughMarkerPath(
                             frameData, m_ProfilerSampleNameProvider,
                             m_LocalSelectedItemMarkerIdPath, markerNamePath.Count, ref name,
                             ref m_CachedDeepestRawSampleIndexPath);
@@ -469,7 +482,7 @@ namespace LightningProfiler
                     m_CachedDeepestRawSampleIndexPath.Capacity = unreachableDepth;
 
                 string name = null;
-                var foundRawIndex = ProfilerTimelineGUI.FindNextSampleThroughMarkerPath(rawFrameDataView, m_ProfilerSampleNameProvider, markerIdPath, unreachableDepth, ref name, ref m_CachedDeepestRawSampleIndexPath, specificRawSampleIndexToFind: rawSampleIndex);
+                var foundRawIndex = MarkerPathTraversal.FindNextSampleThroughMarkerPath(rawFrameDataView, m_ProfilerSampleNameProvider, markerIdPath, unreachableDepth, ref name, ref m_CachedDeepestRawSampleIndexPath, specificRawSampleIndexToFind: rawSampleIndex);
                 if (foundRawIndex < 0 || foundRawIndex != rawSampleIndex)
                     return HierarchyFrameDataView.invalidSampleId;
 
@@ -899,7 +912,7 @@ namespace LightningProfiler
                 using (var iterator = new RawFrameDataView(m_FrameDataView.frameIndex, m_FrameDataView.threadIndex))
                 {
                     string name = null;
-                    ProfilerTimelineGUI.GetItemMarkerIdPath(iterator, m_ProfilerSampleNameProvider, rawSampleIndices[0], ref name, ref markerIDs);
+                    MarkerPathTraversal.GetItemMarkerIdPath(iterator, m_ProfilerSampleNameProvider, rawSampleIndices[0], ref name, ref markerIDs);
                 }
                 selection.GenerateMarkerNamePath(m_FrameDataView, markerIDs);
             }

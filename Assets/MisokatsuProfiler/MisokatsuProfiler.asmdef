@@ -1,3 +1,18 @@
 {
-	"name": "MisokatsuProfiler"
+    "name": "MisokatsuProfiler",
+    "rootNamespace": "",
+    "references": [
+        "GUID:b4bf93d3e74a3b54c83f18b7d4068e75"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
 }

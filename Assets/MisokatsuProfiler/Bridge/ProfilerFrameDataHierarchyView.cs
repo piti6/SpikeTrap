@@ -98,6 +98,10 @@ namespace LightningProfiler
         public const int invalidTreeViewId = -1;
         public const int invalidTreeViewDepth = -1;
 
+        public static GUIContent LiveViewDisabledContent => BaseStyles.liveUpdateMessage;
+        public static GUIContent NoFrameDataContent => BaseStyles.noData;
+        public static GUIStyle ProfilerDetailsLabelStyle => BaseStyles.label;
+
         private IProfilerWindowController m_profilerWindow;
 
         [SerializeField]
@@ -111,29 +115,98 @@ namespace LightningProfiler
         [SerializeField]
         MultiColumnHeaderState m_MultiColumnHeaderState;
 
+        [SerializeField]
+        string m_GroupName = "";
+
+        [SerializeField]
+        string m_ThreadName = "Main Thread";
+
+        [SerializeField]
+        string m_FullThreadName = "Main Thread";
+
+        [SerializeField]
+        ulong m_ThreadId;
+
+        [SerializeField]
+        int m_ThreadIndex = FrameDataView.invalidThreadIndex;
+
+        [SerializeField]
+        int m_ThreadIndexInList;
+
+        [NonSerialized]
+        List<ThreadMenuEntry> m_ThreadMenuEntries;
+
+        enum DetailedPanelType
+        {
+            None = 0,
+            RelatedData = 1,
+            Calls = 2
+        }
+
+        [SerializeField]
+        DetailedPanelType m_DetailedPanelType;
+
+        static readonly GUIContent[] kDetailedPanelNames =
+        {
+            EditorGUIUtility.TrTextContent("No Details"),
+            EditorGUIUtility.TrTextContent("Related Data"),
+            EditorGUIUtility.TrTextContent("Calls")
+        };
+
+        static readonly int[] kDetailedPanelValues = { 0, 1, 2 };
+
+        readonly string m_serializationPrefKeyPrefix;
+        string MultiColumnHeaderStatePrefKey => m_serializationPrefKeyPrefix + "MultiColumnHeaderState";
+
+        struct ThreadMenuEntry : IComparable<ThreadMenuEntry>
+        {
+            public int sortKey;
+            public string label;
+            public int engineThreadIndex;
+
+            public int CompareTo(ThreadMenuEntry other)
+            {
+                if (sortKey != other.sortKey)
+                    return sortKey.CompareTo(other.sortKey);
+                var c = string.Compare(label, other.label, StringComparison.OrdinalIgnoreCase);
+                return c != 0 ? c : engineThreadIndex.CompareTo(other.engineThreadIndex);
+            }
+        }
+
+        public string groupName => m_GroupName ?? string.Empty;
+        public string threadName => m_ThreadName ?? string.Empty;
+        public ulong threadId => m_ThreadId;
+        public int threadIndex => m_ThreadIndex;
 
         static readonly GUIContent[] kCPUProfilerViewTypeNames = new GUIContent[]
         {
+            EditorGUIUtility.TrTextContent("Timeline"),
             EditorGUIUtility.TrTextContent("Hierarchy"),
             EditorGUIUtility.TrTextContent("Raw Hierarchy")
         };
 
         static readonly int[] kCPUProfilerViewTypes = new int[]
         {
-            (int)ProfilerViewType.Hierarchy,
-            (int)ProfilerViewType.RawHierarchy
+            (int)CpuProfilerViewType.Timeline,
+            (int)CpuProfilerViewType.Hierarchy,
+            (int)CpuProfilerViewType.RawHierarchy
         };
 
-        public event Action<ProfilerViewType> OnChangeViewType = viewType => { };
+        public event Action<CpuProfilerViewType> OnChangeViewType = viewType => { };
         public event Action<bool> OnToggleLive = on => { };
+        public event Action<string, string, int> userChangedThread = delegate { };
 
-        protected void DrawViewTypePopup(ProfilerViewType viewType)
+        protected void DrawViewTypePopup(CpuProfilerViewType viewType)
         {
-            var newViewType = (ProfilerViewType)EditorGUILayout.IntPopup((int)viewType, kCPUProfilerViewTypeNames, kCPUProfilerViewTypes, BaseStyles.viewTypeToolbarDropDown, GUILayout.Width(BaseStyles.viewTypeToolbarDropDown.fixedWidth));
+            DrawViewTypePopup(viewType, OnChangeViewType.Invoke);
+        }
 
+        public void DrawViewTypePopup(CpuProfilerViewType viewType, Action<CpuProfilerViewType> onViewTypeChanged)
+        {
+            var newViewType = (CpuProfilerViewType)EditorGUILayout.IntPopup((int)viewType, kCPUProfilerViewTypeNames, kCPUProfilerViewTypes, BaseStyles.viewTypeToolbarDropDown, GUILayout.Width(BaseStyles.viewTypeToolbarDropDown.fixedWidth));
             if (newViewType != viewType)
             {
-                OnChangeViewType.Invoke(newViewType);
+                onViewTypeChanged.Invoke(newViewType);
                 GUIUtility.ExitGUI();
             }
         }
@@ -183,11 +256,14 @@ namespace LightningProfiler
         public delegate void SearchChangedCallback(string newSearch);
         public event SearchChangedCallback searchChanged;
 
-        private const string m_multiColumnHeaderStatePrefKey = "Profiler.CPUProfilerModule.HierarchyView.MultiColumnHeaderState";
-
         private bool m_Initialized;
 
-        public ProfilerFrameDataHierarchyView() { }
+        public ProfilerFrameDataHierarchyView() : this("Profiler.CPUProfilerModule.HierarchyView.") { }
+
+        public ProfilerFrameDataHierarchyView(string serializationPrefKeyPrefix)
+        {
+            m_serializationPrefKeyPrefix = serializationPrefKeyPrefix ?? "Profiler.CPUProfilerModule.HierarchyView.";
+        }
 
         public void OnEnable(IProfilerWindowController profilerWindow)
         {
@@ -195,7 +271,7 @@ namespace LightningProfiler
             m_profilerWindow.frameDataViewAboutToBeDisposed += OnFrameDataViewAboutToBeDisposed;
             m_FrameIndex = FrameDataView.invalidOrCurrentFrameIndex;
 
-            var multiColumnHeaderStateData = SessionState.GetString(m_multiColumnHeaderStatePrefKey, "");
+            var multiColumnHeaderStateData = SessionState.GetString(MultiColumnHeaderStatePrefKey, "");
             if (!string.IsNullOrEmpty(multiColumnHeaderStateData))
             {
                 try
@@ -241,7 +317,7 @@ namespace LightningProfiler
 
         void OnMultiColumnHeaderChanged(MultiColumnHeader header)
         {
-            SessionState.SetString(m_multiColumnHeaderStatePrefKey, JsonUtility.ToJson(header.state));
+            SessionState.SetString(MultiColumnHeaderStatePrefKey, JsonUtility.ToJson(header.state));
         }
 
         private static readonly ProfilerFrameDataMultiColumnHeader.Column[] cpuHierarchyColumns = new[]
@@ -349,32 +425,57 @@ namespace LightningProfiler
             }
         }
 
-        public void DoGUI(HierarchyFrameDataView frameDataView, bool isLive, ProfilerViewType viewType)
+        public void DoGUI(HierarchyFrameDataView frameDataView, bool isLive, CpuProfilerViewType viewType)
         {
+            bool live = isLive;
+            DoGUI(frameDataView, true, ref live, viewType, null);
+        }
+
+        public void DoGUI(HierarchyFrameDataView frameDataView, bool fetchData, ref bool updateViewLive, CpuProfilerViewType viewType, Action drawOptionsMenu)
+        {
+            var isSearchAllowed = string.IsNullOrEmpty(treeView.searchString) ||
+                !(m_profilerWindow.ProfilerWindowOverheadIsAffectingProfilingRecordingData() && ProfilerDriver.deepProfiling);
             var isDataAvailable = frameDataView != null && frameDataView.valid;
 
-            // Hierarchy view area
             GUILayout.BeginVertical();
 
-            DrawToolbar(frameDataView, isLive, viewType);
+            if (isDataAvailable && (m_ThreadIndex != frameDataView.threadIndex || m_ThreadName != frameDataView.threadName))
+                SyncThreadStateFromFrameData(frameDataView);
+
+            DrawHierarchyToolbar(frameDataView, fetchData, ref updateViewLive, viewType, drawOptionsMenu);
 
             if (!isDataAvailable)
             {
-                if (!isLive)
+                if (!fetchData && !updateViewLive)
                     GUILayout.Label(BaseStyles.liveUpdateMessage, BaseStyles.label);
                 else
                     GUILayout.Label(BaseStyles.noData, BaseStyles.label);
             }
+            else if (!isSearchAllowed)
+            {
+                GUILayout.Label(BaseStyles.disabledSearchText, BaseStyles.label);
+            }
             else
             {
                 var rect = GUILayoutUtility.GetRect(GUIContent.none, GUIStyle.none, GUILayout.ExpandHeight(true), GUILayout.ExpandHeight(true));
-
                 m_TreeView.SetFrameDataView(frameDataView);
-                m_TreeView.OnGUI(rect, isLive);
+                m_TreeView.OnGUI(rect, updateViewLive);
+            }
+
+            if (m_DetailedPanelType != DetailedPanelType.None && isDataAvailable)
+            {
+                EditorGUILayout.BeginHorizontal(BaseStyles.toolbar);
+                DrawDetailedPanelPopup();
+                drawOptionsMenu?.Invoke();
+                EditorGUILayout.EndHorizontal();
+                GUILayout.Label(
+                    m_DetailedPanelType == DetailedPanelType.RelatedData
+                        ? "Related Data panel: use Unity Editor Profiler for full object linkage, or extend LightningProfiler."
+                        : "Calls panel: use Unity Editor Profiler for full caller/callee data, or extend LightningProfiler.",
+                    EditorStyles.wordWrappedLabel);
             }
 
             GUILayout.EndVertical();
-
 
             HandleKeyboardEvents();
         }
@@ -385,13 +486,15 @@ namespace LightningProfiler
             treeView.searchString = m_SearchField.OnToolbarGUI(rect, treeView.searchString);
         }
 
-        void DrawToolbar(HierarchyFrameDataView frameDataView, bool updateViewLive, ProfilerViewType viewType)
+        void DrawHierarchyToolbar(HierarchyFrameDataView frameDataView, bool fetchData, ref bool updateViewLive, CpuProfilerViewType viewType, Action drawOptionsMenu)
         {
             EditorGUILayout.BeginHorizontal(BaseStyles.toolbar);
 
             DrawViewTypePopup(viewType);
 
-            DrawLiveUpdateToggle(updateViewLive);
+            DrawLiveUpdateToggleRef(ref updateViewLive);
+
+            DrawThreadPopup(frameDataView);
 
             GUILayout.FlexibleSpace();
 
@@ -406,7 +509,142 @@ namespace LightningProfiler
 
             DrawSearchBar();
 
+            if (m_DetailedPanelType == DetailedPanelType.None)
+            {
+                DrawDetailedPanelPopup();
+                EditorGUILayout.Space();
+                drawOptionsMenu?.Invoke();
+            }
+
             EditorGUILayout.EndHorizontal();
+        }
+
+        void DrawLiveUpdateToggleRef(ref bool updateViewLive)
+        {
+            using (new EditorGUI.DisabledScope(ProcessService.level != ProcessLevel.Main))
+            {
+                var newUpdateViewLive = GUILayout.Toggle(updateViewLive, BaseStyles.updateLive, EditorStyles.toolbarButton);
+                if (newUpdateViewLive != updateViewLive)
+                {
+                    updateViewLive = newUpdateViewLive;
+                    OnToggleLive.Invoke(updateViewLive);
+                }
+            }
+        }
+
+        void DrawDetailedPanelPopup()
+        {
+            var v = (DetailedPanelType)EditorGUILayout.IntPopup((int)m_DetailedPanelType, kDetailedPanelNames, kDetailedPanelValues, BaseStyles.detailedViewTypeToolbarDropDown, GUILayout.Width(BaseStyles.detailedViewTypeToolbarDropDown.fixedWidth));
+            if (v != m_DetailedPanelType)
+                m_DetailedPanelType = v;
+        }
+
+        static int ThreadSortOrder(string displayName)
+        {
+            if (displayName.StartsWith("Job", StringComparison.Ordinal))
+                return 2;
+            if (displayName.StartsWith("Loading", StringComparison.Ordinal))
+                return 3;
+            if (displayName.IndexOf("Scripting", StringComparison.Ordinal) >= 0)
+                return 4;
+            if (displayName.StartsWith("Main Thread", StringComparison.Ordinal))
+                return 0;
+            if (displayName.StartsWith("Render Thread", StringComparison.Ordinal))
+                return 1;
+            return 10;
+        }
+
+        void RefreshThreadMenu(int frameIndex)
+        {
+            if (frameIndex < 0)
+                return;
+            if (m_ThreadMenuEntries == null)
+                m_ThreadMenuEntries = new List<ThreadMenuEntry>();
+            m_ThreadMenuEntries.Clear();
+            using (var it = new ProfilerFrameDataIterator())
+            {
+                int n = it.GetThreadCount(frameIndex);
+                for (int i = 0; i < n; i++)
+                {
+                    it.SetRoot(frameIndex, i);
+                    var g = it.GetGroupName() ?? "";
+                    var tn = it.GetThreadName() ?? "";
+                    var label = string.IsNullOrEmpty(g) ? tn : g + "." + tn;
+                    m_ThreadMenuEntries.Add(new ThreadMenuEntry
+                    {
+                        sortKey = ThreadSortOrder(label),
+                        label = label,
+                        engineThreadIndex = i
+                    });
+                }
+            }
+
+            m_ThreadMenuEntries.Sort();
+            m_ThreadIndexInList = 0;
+            for (int i = 0; i < m_ThreadMenuEntries.Count; i++)
+            {
+                if (m_ThreadMenuEntries[i].engineThreadIndex == m_ThreadIndex)
+                {
+                    m_ThreadIndexInList = i;
+                    break;
+                }
+            }
+        }
+
+        void DrawThreadPopup(HierarchyFrameDataView frameDataView)
+        {
+            var style = BaseStyles.threadSelectionToolbarDropDown;
+            var content = new GUIContent(string.IsNullOrEmpty(m_FullThreadName) ? "Main Thread" : m_FullThreadName);
+            float minW, maxW;
+            style.CalcMinMaxWidth(content, out minW, out maxW);
+            var r = GUILayoutUtility.GetRect(content, style, GUILayout.MinWidth(Math.Max(BaseStyles.detailedViewTypeToolbarDropDown.fixedWidth, minW)));
+            var disabled = frameDataView == null || !frameDataView.valid;
+            using (new EditorGUI.DisabledScope(disabled))
+            {
+                if (EditorGUI.DropdownButton(r, content, FocusType.Keyboard, style))
+                {
+                    RefreshThreadMenu(frameDataView.frameIndex);
+                    var menu = new GenericMenu();
+                    for (int i = 0; i < m_ThreadMenuEntries.Count; i++)
+                    {
+                        int idx = i;
+                        var e = m_ThreadMenuEntries[i];
+                        menu.AddItem(new GUIContent(e.label), idx == m_ThreadIndexInList, () => OnThreadMenuPick(e, idx));
+                    }
+
+                    menu.DropDown(r);
+                }
+            }
+        }
+
+        void OnThreadMenuPick(ThreadMenuEntry entry, int listIndex)
+        {
+            m_ThreadIndexInList = listIndex;
+            m_FullThreadName = entry.label;
+            var dot = m_FullThreadName.IndexOf('.');
+            if (dot > 0)
+            {
+                m_GroupName = m_FullThreadName.Substring(0, dot);
+                m_ThreadName = m_FullThreadName.Substring(dot + 1);
+            }
+            else
+            {
+                m_GroupName = string.Empty;
+                m_ThreadName = m_FullThreadName;
+            }
+
+            userChangedThread(m_GroupName, m_ThreadName, entry.engineThreadIndex);
+            m_profilerWindow.Repaint();
+        }
+
+        void SyncThreadStateFromFrameData(HierarchyFrameDataView fd)
+        {
+            m_GroupName = fd.threadGroupName ?? string.Empty;
+            m_ThreadName = fd.threadName ?? string.Empty;
+            m_ThreadId = fd.threadId;
+            m_ThreadIndex = fd.threadIndex;
+            m_FullThreadName = string.IsNullOrEmpty(m_GroupName) ? m_ThreadName : m_GroupName + "." + m_ThreadName;
+            RefreshThreadMenu(fd.frameIndex);
         }
 
         void HandleKeyboardEvents()
@@ -486,9 +724,13 @@ namespace LightningProfiler
 
         public void SetFrameDataView(HierarchyFrameDataView frameDataView)
         {
-            m_TreeView.SetFrameDataView(frameDataView);
+            if (frameDataView != null && frameDataView.valid)
+                SyncThreadStateFromFrameData(frameDataView);
+            if (m_TreeView != null)
+                m_TreeView.SetFrameDataView(frameDataView);
             m_frameDataView = frameDataView;
-            m_FrameIndex = frameDataView.frameIndex;
+            if (frameDataView != null && frameDataView.valid)
+                m_FrameIndex = frameDataView.frameIndex;
         }
 
         public void Clear()
