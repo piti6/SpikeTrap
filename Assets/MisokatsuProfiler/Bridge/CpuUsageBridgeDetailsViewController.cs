@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 using Unity.Profiling.Editor;
 using UnityEditor;
 using UnityEditor.Graphs;
@@ -94,11 +95,13 @@ namespace LightningProfiler
         int m_ThresholdCachedLastFrame = -1;
         const float k_ThresholdStripHeight = 8f;
 
-        // Pause-on-spike / pause-on-match
+        // Pause-on-spike / pause-on-match / log-on-spike
         const string k_PauseOnSpikeKey = "LightningProfiler.PauseOnSpike";
         const string k_PauseOnMatchKey = "LightningProfiler.PauseOnMatch";
+        const string k_LogOnSpikeKey = "LightningProfiler.LogOnSpike";
         bool m_PauseOnSpike;
         bool m_PauseOnMatch;
+        bool m_LogOnSpike;
         bool m_PauseCallbackSubscribed;
 
 
@@ -173,6 +176,7 @@ namespace LightningProfiler
             m_ChartFilterThresholdMs = EditorPrefs.GetFloat(k_ChartFilterThresholdKey, 0f);
             m_PauseOnSpike = EditorPrefs.GetBool(k_PauseOnSpikeKey, false);
             m_PauseOnMatch = EditorPrefs.GetBool(k_PauseOnMatchKey, false);
+            m_LogOnSpike = EditorPrefs.GetBool(k_LogOnSpikeKey, false);
             UpdatePauseCallbackSubscription();
             m_Initialized = true;
         }
@@ -303,6 +307,25 @@ namespace LightningProfiler
                     EditorPrefs.SetBool(k_PauseOnSpikeKey, m_PauseOnSpike);
                     UpdatePauseCallbackSubscription();
                 }
+
+                var newLog = GUILayout.Toggle(m_LogOnSpike,
+                    EditorGUIUtility.TrTextContent("Log on spike", "Log spike frame details to the console when a frame exceeds the threshold."),
+                    EditorStyles.toolbarButton);
+                if (newLog != m_LogOnSpike)
+                {
+                    m_LogOnSpike = newLog;
+                    EditorPrefs.SetBool(k_LogOnSpikeKey, m_LogOnSpike);
+                    UpdatePauseCallbackSubscription();
+                }
+            }
+            else
+            {
+                // Show disabled when no threshold is set.
+                using (new EditorGUI.DisabledScope(true))
+                {
+                    GUILayout.Toggle(false, EditorGUIUtility.TrTextContent("Pause on spike"), EditorStyles.toolbarButton);
+                    GUILayout.Toggle(false, EditorGUIUtility.TrTextContent("Log on spike"), EditorStyles.toolbarButton);
+                }
             }
 
             using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(m_SearchString)))
@@ -324,7 +347,7 @@ namespace LightningProfiler
 
         void UpdatePauseCallbackSubscription()
         {
-            bool needSpike = m_PauseOnSpike && m_ChartFilterThresholdMs > 0f;
+            bool needSpike = (m_PauseOnSpike || m_LogOnSpike) && m_ChartFilterThresholdMs > 0f;
             bool needMatch = m_PauseOnMatch && !string.IsNullOrEmpty(m_SearchString);
             bool shouldSubscribe = needSpike || needMatch;
 
@@ -342,25 +365,35 @@ namespace LightningProfiler
 
         void OnNewProfilerFrame(int connectionId, int frameIndex)
         {
-            if (!EditorApplication.isPlaying || EditorApplication.isPaused)
-                return;
-
             int checkFrame = frameIndex - 1;
             if (checkFrame < ProfilerDriver.firstFrameIndex)
                 return;
 
-            bool shouldPause = false;
+            bool isPlaying = EditorApplication.isPlaying && !EditorApplication.isPaused;
 
-            // Check spike threshold.
-            if (m_PauseOnSpike && m_ChartFilterThresholdMs > 0f)
+            // Check spike threshold (works in both editor and play mode).
+            bool isSpike = false;
+            if ((m_PauseOnSpike || m_LogOnSpike) && m_ChartFilterThresholdMs > 0f)
             {
                 using (var iter = new ProfilerFrameDataIterator())
                 {
                     iter.SetRoot(checkFrame, 0);
                     if (iter.frameTimeMS >= m_ChartFilterThresholdMs)
-                        shouldPause = true;
+                        isSpike = true;
                 }
             }
+
+            if (isSpike && m_LogOnSpike)
+                LogSpikeFrame(checkFrame);
+
+            // Pause logic only applies during play mode.
+            if (!isPlaying)
+                return;
+
+            bool shouldPause = false;
+
+            if (isSpike && m_PauseOnSpike)
+                shouldPause = true;
 
             // Check search term match.
             if (!shouldPause && m_PauseOnMatch && !string.IsNullOrEmpty(m_SearchString))
@@ -371,7 +404,7 @@ namespace LightningProfiler
                     shouldPause = true;
             }
 
-            if (shouldPause && EditorApplication.isPlaying)
+            if (shouldPause)
             {
                 var pauseFrame = checkFrame;
 
@@ -384,6 +417,56 @@ namespace LightningProfiler
 
                 EditorApplication.delayCall += Pause;
             }
+        }
+
+        void LogSpikeFrame(int frameIndex)
+        {
+            var sb = new StringBuilder();
+
+            using (var iter = new ProfilerFrameDataIterator())
+            {
+                iter.SetRoot(frameIndex, 0);
+                sb.Append($"[Spike] Frame {frameIndex} — CPU: {iter.frameTimeMS:F2}ms, GPU: {iter.frameGpuTimeMS:F2}ms (threshold: {m_ChartFilterThresholdMs:F0}ms)");
+            }
+
+            // Dump full sample hierarchy from the main thread.
+            using (var raw = ProfilerDriver.GetRawFrameDataView(frameIndex, 0))
+            {
+                if (raw != null && raw.valid && raw.sampleCount > 1)
+                {
+                    // Build depth array via pre-order walk using children counts.
+                    var depths = new int[raw.sampleCount];
+                    var depthStack = new Stack<(int remaining, int depth)>();
+                    depthStack.Push((raw.GetSampleChildrenCount(0), 0));
+
+                    for (int i = 1; i < raw.sampleCount; i++)
+                    {
+                        var top = depthStack.Pop();
+                        depths[i] = top.depth + 1;
+                        int remaining = top.remaining - 1;
+                        if (remaining > 0)
+                            depthStack.Push((remaining, top.depth));
+
+                        int childCount = raw.GetSampleChildrenCount(i);
+                        if (childCount > 0)
+                            depthStack.Push((childCount, depths[i]));
+                    }
+
+                    // Print each sample indented by depth.
+                    for (int i = 1; i < raw.sampleCount; i++)
+                    {
+                        float timeMs = raw.GetSampleTimeMs(i);
+                        string name = raw.GetSampleName(i);
+                        int depth = depths[i];
+
+                        sb.AppendLine();
+                        sb.Append(' ', depth * 2);
+                        sb.Append($"{name}: {timeMs:F2}ms");
+                    }
+                }
+            }
+
+            Debug.Log(sb.ToString());
         }
 
         void UpdateThresholdFrameMatches()
