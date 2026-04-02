@@ -124,6 +124,12 @@ namespace LightningProfiler
         int m_GcCachedLastFrame = -1;
         const float k_GcStripHeight = 12f;
 
+        // Save-only-marked-frames
+        const string k_SaveMarkedOnlyKey = "LightningProfiler.SaveMarkedOnly";
+        bool m_SaveMarkedOnly;
+        readonly HashSet<int> m_MarkedFrameIndices = new HashSet<int>();
+        int m_DefaultFrameHistoryLength;
+
 
         public CpuUsageBridgeDetailsViewController(ProfilerWindow profilerWindow)
             : base(profilerWindow)
@@ -200,6 +206,8 @@ namespace LightningProfiler
             m_IgnoreEditorLoop = EditorPrefs.GetBool(k_IgnoreEditorLoopKey, true);
             m_GcFilterThresholdKB = EditorPrefs.GetFloat(k_GcFilterThresholdKey, 0f);
             m_PauseOnGc = EditorPrefs.GetBool(k_PauseOnGcKey, false);
+            m_SaveMarkedOnly = EditorPrefs.GetBool(k_SaveMarkedOnlyKey, false);
+            m_DefaultFrameHistoryLength = ProfilerUserSettings.frameCount;
             UpdatePauseCallbackSubscription();
             m_Initialized = true;
         }
@@ -409,6 +417,24 @@ namespace LightningProfiler
                 m_GcHotFrames.Clear();
             }
 
+            // --- Save marked only ---
+            var newSaveMarked = GUILayout.Toggle(m_SaveMarkedOnly,
+                EditorGUIUtility.TrTextContent("Save marked only",
+                    "When enabled, the profiler buffer keeps only frames that match spike/GC/search filters. Non-matching frames are discarded as new ones arrive."),
+                EditorStyles.toolbarButton);
+            if (newSaveMarked != m_SaveMarkedOnly)
+            {
+                m_SaveMarkedOnly = newSaveMarked;
+                EditorPrefs.SetBool(k_SaveMarkedOnlyKey, m_SaveMarkedOnly);
+                if (!m_SaveMarkedOnly)
+                {
+                    // Restore normal buffer size
+                    ProfilerDriver.SetMaxFrameHistoryLength(m_DefaultFrameHistoryLength);
+                }
+                m_MarkedFrameIndices.Clear();
+                UpdatePauseCallbackSubscription();
+            }
+
             EditorGUILayout.EndHorizontal();
         }
 
@@ -446,7 +472,8 @@ namespace LightningProfiler
             bool needSpike = (m_PauseOnSpike || m_LogOnSpike) && m_ChartFilterThresholdMs > 0f;
             bool needMatch = m_PauseOnMatch && !string.IsNullOrEmpty(m_SearchString);
             bool needGc = m_PauseOnGc && m_GcFilterThresholdKB > 0f;
-            bool shouldSubscribe = needSpike || needMatch || needGc;
+            bool needSaveFilter = m_SaveMarkedOnly;
+            bool shouldSubscribe = needSpike || needMatch || needGc || needSaveFilter;
 
             if (shouldSubscribe && !m_PauseCallbackSubscribed)
             {
@@ -468,9 +495,11 @@ namespace LightningProfiler
 
             bool isPlaying = EditorApplication.isPlaying && !EditorApplication.isPaused;
 
-            // Check spike threshold (works in both editor and play mode).
+            // --- Determine if frame is "marked" by any active filter ---
+
+            // Check spike threshold.
             bool isSpike = false;
-            if ((m_PauseOnSpike || m_LogOnSpike) && m_ChartFilterThresholdMs > 0f)
+            if (m_ChartFilterThresholdMs > 0f)
             {
                 float frameTimeMs;
                 using (var iter = new ProfilerFrameDataIterator())
@@ -489,14 +518,54 @@ namespace LightningProfiler
 
             // Check GC threshold.
             bool isGcSpike = false;
-            if (m_PauseOnGc && m_GcFilterThresholdKB > 0f)
+            if (m_GcFilterThresholdKB > 0f)
             {
                 long gcBytes = GetFrameGcAllocBytes(checkFrame, 0, m_IgnoreEditorLoop);
                 if (gcBytes >= (long)(m_GcFilterThresholdKB * 1024f))
                     isGcSpike = true;
             }
 
-            // Pause logic only applies during play mode.
+            // Check search term match.
+            bool isSearchMatch = false;
+            if (!string.IsNullOrEmpty(m_SearchString))
+            {
+                int threadIndex = m_FrameDataHierarchyView.threadIndex;
+                if (threadIndex < 0) threadIndex = 0;
+                if (FrameContainsSearchTerm(checkFrame, threadIndex, m_SearchString))
+                    isSearchMatch = true;
+            }
+
+            bool isMarked = isSpike || isGcSpike || isSearchMatch;
+
+            // --- Save-marked-only: keep buffer just large enough for all marked frames ---
+            if (m_SaveMarkedOnly)
+            {
+                if (isMarked)
+                    m_MarkedFrameIndices.Add(checkFrame);
+
+                // Prune marked indices that already fell out of the buffer
+                int bufferFirst = ProfilerDriver.firstFrameIndex;
+                m_MarkedFrameIndices.RemoveWhere(f => f < bufferFirst);
+
+                if (m_MarkedFrameIndices.Count > 0)
+                {
+                    // Find oldest marked frame — buffer must span from there to newest
+                    int oldestMarked = int.MaxValue;
+                    foreach (var f in m_MarkedFrameIndices)
+                        if (f < oldestMarked) oldestMarked = f;
+
+                    // Set buffer just large enough: from oldest marked to current frame + 1 margin
+                    int neededSize = frameIndex - oldestMarked + 2;
+                    ProfilerDriver.SetMaxFrameHistoryLength(Mathf.Max(neededSize, m_MarkedFrameIndices.Count + 1));
+                }
+                else
+                {
+                    // No marked frames yet — keep minimal buffer
+                    ProfilerDriver.SetMaxFrameHistoryLength(2);
+                }
+            }
+
+            // --- Pause logic (play mode only) ---
             if (!isPlaying)
                 return;
 
@@ -508,14 +577,8 @@ namespace LightningProfiler
             if (!shouldPause && isGcSpike && m_PauseOnGc)
                 shouldPause = true;
 
-            // Check search term match.
-            if (!shouldPause && m_PauseOnMatch && !string.IsNullOrEmpty(m_SearchString))
-            {
-                int threadIndex = m_FrameDataHierarchyView.threadIndex;
-                if (threadIndex < 0) threadIndex = 0;
-                if (FrameContainsSearchTerm(checkFrame, threadIndex, m_SearchString))
-                    shouldPause = true;
-            }
+            if (!shouldPause && isSearchMatch && m_PauseOnMatch)
+                shouldPause = true;
 
             if (shouldPause)
             {
