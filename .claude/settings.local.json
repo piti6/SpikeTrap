@@ -10,7 +10,8 @@
       "Bash(ls C:/LightningProfiler/Assets/MisokatsuProfiler/Bridge/*.cs)",
       "Bash(uloop get-logs:*)",
       "Bash(uloop control-play-mode:*)",
-      "Bash(uloop screenshot:*)"
+      "Bash(uloop screenshot:*)",
+      "Bash(grep -E \"\\\\.cs$\")"
     ]
   },
   "enabledMcpjsonServers": [

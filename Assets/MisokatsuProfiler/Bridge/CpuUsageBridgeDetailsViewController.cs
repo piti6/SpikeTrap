@@ -81,19 +81,23 @@ namespace LightningProfiler
         bool m_UpdateViewLive;
         bool m_Initialized;
         float m_ChartFilterThresholdMs;
+        readonly StringBuilder m_SpikeLogBuilder = new StringBuilder(4096);
+        double m_LastSpikeLogTime;
+        const double k_SpikeLogCooldownSeconds = 1.0;
+        const int k_MaxLogSamples = 500;
 
         // Search frame highlight state
         string m_SearchString;
         readonly HashSet<int> m_SearchMatchFrames = new HashSet<int>();
         string m_SearchMatchCachedQuery;
         int m_SearchMatchCachedLastFrame = -1;
-        const float k_SearchStripHeight = 6f;
+        const float k_SearchStripHeight = 10f;
 
         // Threshold frame highlight state
         readonly HashSet<int> m_ThresholdHotFrames = new HashSet<int>();
         float m_ThresholdCachedValue;
         int m_ThresholdCachedLastFrame = -1;
-        const float k_ThresholdStripHeight = 8f;
+        const float k_ThresholdStripHeight = 12f;
 
         // Pause-on-spike / pause-on-match / log-on-spike
         const string k_PauseOnSpikeKey = "LightningProfiler.PauseOnSpike";
@@ -103,6 +107,22 @@ namespace LightningProfiler
         bool m_PauseOnMatch;
         bool m_LogOnSpike;
         bool m_PauseCallbackSubscribed;
+
+        // Ignore EditorLoop frames
+        const string k_IgnoreEditorLoopKey = "LightningProfiler.IgnoreEditorLoop";
+        bool m_IgnoreEditorLoop;
+
+        // GC filter settings
+        const string k_GcFilterThresholdKey = "LightningProfiler.GcFilterThresholdKB";
+        const string k_PauseOnGcKey = "LightningProfiler.PauseOnGC";
+        float m_GcFilterThresholdKB;
+        bool m_PauseOnGc;
+
+        // GC frame highlight state
+        readonly HashSet<int> m_GcHotFrames = new HashSet<int>();
+        float m_GcCachedThreshold;
+        int m_GcCachedLastFrame = -1;
+        const float k_GcStripHeight = 12f;
 
 
         public CpuUsageBridgeDetailsViewController(ProfilerWindow profilerWindow)
@@ -177,6 +197,9 @@ namespace LightningProfiler
             m_PauseOnSpike = EditorPrefs.GetBool(k_PauseOnSpikeKey, false);
             m_PauseOnMatch = EditorPrefs.GetBool(k_PauseOnMatchKey, false);
             m_LogOnSpike = EditorPrefs.GetBool(k_LogOnSpikeKey, false);
+            m_IgnoreEditorLoop = EditorPrefs.GetBool(k_IgnoreEditorLoopKey, true);
+            m_GcFilterThresholdKB = EditorPrefs.GetFloat(k_GcFilterThresholdKey, 0f);
+            m_PauseOnGc = EditorPrefs.GetBool(k_PauseOnGcKey, false);
             UpdatePauseCallbackSubscription();
             m_Initialized = true;
         }
@@ -201,13 +224,18 @@ namespace LightningProfiler
                 return;
             }
 
-            // Draw chart filter threshold control + highlight strip
-            DrawChartFilterControl();
+            // Draw combined filter controls (spike + GC) in one toolbar
+            DrawFilterControls();
+
+            // Update match data
             if (m_ChartFilterThresholdMs > 0f)
-            {
                 UpdateThresholdFrameMatches();
-                DrawThresholdFrameHighlightStrip(rect);
-            }
+            if (m_GcFilterThresholdKB > 0f)
+                UpdateGcFrameMatches();
+
+            // Draw combined highlight strips side by side
+            if (m_ChartFilterThresholdMs > 0f || m_GcFilterThresholdKB > 0f)
+                DrawCombinedHighlightStrip(rect);
 
             // Draw search match indicator strip
             if (!string.IsNullOrEmpty(m_SearchString))
@@ -275,10 +303,12 @@ namespace LightningProfiler
             ProfilerWindow.Repaint();
         }
 
-        void DrawChartFilterControl()
+        void DrawFilterControls()
         {
             EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
-            GUILayout.Label("Chart Filter", EditorStyles.miniLabel, GUILayout.Width(65));
+
+            // --- Spike filter ---
+            GUILayout.Label("Spike", EditorStyles.miniLabel, GUILayout.Width(34));
             var newThreshold = EditorGUILayout.FloatField(m_ChartFilterThresholdMs, EditorStyles.toolbarTextField, GUILayout.Width(50));
             GUILayout.Label("ms", EditorStyles.miniLabel, GUILayout.Width(20));
 
@@ -294,12 +324,10 @@ namespace LightningProfiler
                 UpdatePauseCallbackSubscription();
             }
 
-            if (m_ChartFilterThresholdMs > 0f)
+            using (new EditorGUI.DisabledScope(m_ChartFilterThresholdMs <= 0f))
             {
-                GUILayout.Label($"(hiding frames < {m_ChartFilterThresholdMs:F0}ms)", EditorStyles.miniLabel);
-
                 var newPause = GUILayout.Toggle(m_PauseOnSpike,
-                    EditorGUIUtility.TrTextContent("Pause on spike", "Pause play mode when a frame exceeds the threshold."),
+                    EditorGUIUtility.TrTextContent("Pause on spike", "Pause play mode when a frame exceeds the spike threshold."),
                     EditorStyles.toolbarButton);
                 if (newPause != m_PauseOnSpike)
                 {
@@ -309,7 +337,7 @@ namespace LightningProfiler
                 }
 
                 var newLog = GUILayout.Toggle(m_LogOnSpike,
-                    EditorGUIUtility.TrTextContent("Log on spike", "Log spike frame details to the console when a frame exceeds the threshold."),
+                    EditorGUIUtility.TrTextContent("Log on spike", "Log spike frame details to the console."),
                     EditorStyles.toolbarButton);
                 if (newLog != m_LogOnSpike)
                 {
@@ -318,16 +346,37 @@ namespace LightningProfiler
                     UpdatePauseCallbackSubscription();
                 }
             }
-            else
+
+            GUILayout.Space(6);
+
+            // --- GC filter ---
+            GUILayout.Label("GC", EditorStyles.miniLabel, GUILayout.Width(20));
+            var newGcThreshold = EditorGUILayout.FloatField(m_GcFilterThresholdKB, EditorStyles.toolbarTextField, GUILayout.Width(50));
+            GUILayout.Label("KB", EditorStyles.miniLabel, GUILayout.Width(20));
+
+            if (newGcThreshold != m_GcFilterThresholdKB)
             {
-                // Show disabled when no threshold is set.
-                using (new EditorGUI.DisabledScope(true))
+                m_GcFilterThresholdKB = Mathf.Max(0f, newGcThreshold);
+                EditorPrefs.SetFloat(k_GcFilterThresholdKey, m_GcFilterThresholdKB);
+                UpdatePauseCallbackSubscription();
+            }
+
+            using (new EditorGUI.DisabledScope(m_GcFilterThresholdKB <= 0f))
+            {
+                var newPauseGc = GUILayout.Toggle(m_PauseOnGc,
+                    EditorGUIUtility.TrTextContent("Pause on GC", "Pause play mode when a frame's GC allocations exceed the threshold."),
+                    EditorStyles.toolbarButton);
+                if (newPauseGc != m_PauseOnGc)
                 {
-                    GUILayout.Toggle(false, EditorGUIUtility.TrTextContent("Pause on spike"), EditorStyles.toolbarButton);
-                    GUILayout.Toggle(false, EditorGUIUtility.TrTextContent("Log on spike"), EditorStyles.toolbarButton);
+                    m_PauseOnGc = newPauseGc;
+                    EditorPrefs.SetBool(k_PauseOnGcKey, m_PauseOnGc);
+                    UpdatePauseCallbackSubscription();
                 }
             }
 
+            GUILayout.Space(6);
+
+            // --- Pause on match ---
             using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(m_SearchString)))
             {
                 var newMatch = GUILayout.Toggle(m_PauseOnMatch,
@@ -342,14 +391,62 @@ namespace LightningProfiler
             }
 
             GUILayout.FlexibleSpace();
+
+            // --- Ignore EditorLoop ---
+            var newIgnore = GUILayout.Toggle(m_IgnoreEditorLoop,
+                EditorGUIUtility.TrTextContent("Ignore EditorLoop", "Skip EditorLoop frames for spike/GC detection and highlighting."),
+                EditorStyles.toolbarButton);
+            if (newIgnore != m_IgnoreEditorLoop)
+            {
+                m_IgnoreEditorLoop = newIgnore;
+                EditorPrefs.SetBool(k_IgnoreEditorLoopKey, m_IgnoreEditorLoop);
+                // Force rescan of highlight strips
+                m_ThresholdCachedLastFrame = -1;
+                m_ThresholdCachedValue = -1f;
+                m_ThresholdHotFrames.Clear();
+                m_GcCachedLastFrame = -1;
+                m_GcCachedThreshold = -1f;
+                m_GcHotFrames.Clear();
+            }
+
             EditorGUILayout.EndHorizontal();
+        }
+
+        /// Returns the total EditorLoop time in ms for the given frame (sums all EditorLoop samples).
+        static float GetEditorLoopTimeMs(int frameIndex)
+        {
+            float totalMs = 0f;
+            using (var raw = ProfilerDriver.GetRawFrameDataView(frameIndex, 0))
+            {
+                if (raw == null || !raw.valid)
+                    return 0f;
+                for (int i = 0; i < raw.sampleCount; i++)
+                {
+                    if (raw.GetSampleName(i) == "EditorLoop")
+                        totalMs += raw.GetSampleTimeMs(i);
+                }
+            }
+            return totalMs;
+        }
+
+        /// Collects the sample indices of all EditorLoop samples (they have no children).
+        static HashSet<int> FindEditorLoopIndices(RawFrameDataView raw)
+        {
+            var indices = new HashSet<int>();
+            for (int i = 0; i < raw.sampleCount; i++)
+            {
+                if (raw.GetSampleName(i) == "EditorLoop")
+                    indices.Add(i);
+            }
+            return indices;
         }
 
         void UpdatePauseCallbackSubscription()
         {
             bool needSpike = (m_PauseOnSpike || m_LogOnSpike) && m_ChartFilterThresholdMs > 0f;
             bool needMatch = m_PauseOnMatch && !string.IsNullOrEmpty(m_SearchString);
-            bool shouldSubscribe = needSpike || needMatch;
+            bool needGc = m_PauseOnGc && m_GcFilterThresholdKB > 0f;
+            bool shouldSubscribe = needSpike || needMatch || needGc;
 
             if (shouldSubscribe && !m_PauseCallbackSubscribed)
             {
@@ -375,16 +472,29 @@ namespace LightningProfiler
             bool isSpike = false;
             if ((m_PauseOnSpike || m_LogOnSpike) && m_ChartFilterThresholdMs > 0f)
             {
+                float frameTimeMs;
                 using (var iter = new ProfilerFrameDataIterator())
                 {
                     iter.SetRoot(checkFrame, 0);
-                    if (iter.frameTimeMS >= m_ChartFilterThresholdMs)
-                        isSpike = true;
+                    frameTimeMs = iter.frameTimeMS;
                 }
+                if (m_IgnoreEditorLoop)
+                    frameTimeMs -= GetEditorLoopTimeMs(checkFrame);
+                if (frameTimeMs >= m_ChartFilterThresholdMs)
+                    isSpike = true;
             }
 
             if (isSpike && m_LogOnSpike)
                 LogSpikeFrame(checkFrame);
+
+            // Check GC threshold.
+            bool isGcSpike = false;
+            if (m_PauseOnGc && m_GcFilterThresholdKB > 0f)
+            {
+                long gcBytes = GetFrameGcAllocBytes(checkFrame, 0, m_IgnoreEditorLoop);
+                if (gcBytes >= (long)(m_GcFilterThresholdKB * 1024f))
+                    isGcSpike = true;
+            }
 
             // Pause logic only applies during play mode.
             if (!isPlaying)
@@ -393,6 +503,9 @@ namespace LightningProfiler
             bool shouldPause = false;
 
             if (isSpike && m_PauseOnSpike)
+                shouldPause = true;
+
+            if (!shouldPause && isGcSpike && m_PauseOnGc)
                 shouldPause = true;
 
             // Check search term match.
@@ -421,7 +534,14 @@ namespace LightningProfiler
 
         void LogSpikeFrame(int frameIndex)
         {
-            var sb = new StringBuilder();
+            // Rate-limit to prevent feedback loop when profiling the editor.
+            double now = EditorApplication.timeSinceStartup;
+            if (now - m_LastSpikeLogTime < k_SpikeLogCooldownSeconds)
+                return;
+            m_LastSpikeLogTime = now;
+
+            var sb = m_SpikeLogBuilder;
+            sb.Clear();
 
             using (var iter = new ProfilerFrameDataIterator())
             {
@@ -429,11 +549,13 @@ namespace LightningProfiler
                 sb.Append($"[Spike] Frame {frameIndex} — CPU: {iter.frameTimeMS:F2}ms, GPU: {iter.frameGpuTimeMS:F2}ms (threshold: {m_ChartFilterThresholdMs:F0}ms)");
             }
 
-            // Dump full sample hierarchy from the main thread.
+            // Dump sample hierarchy from the main thread (capped to avoid OOM).
             using (var raw = ProfilerDriver.GetRawFrameDataView(frameIndex, 0))
             {
                 if (raw != null && raw.valid && raw.sampleCount > 1)
                 {
+                    int sampleLimit = Mathf.Min(raw.sampleCount, k_MaxLogSamples + 1);
+
                     // Build depth array via pre-order walk using children counts.
                     var depths = new int[raw.sampleCount];
                     var depthStack = new Stack<(int remaining, int depth)>();
@@ -453,7 +575,7 @@ namespace LightningProfiler
                     }
 
                     // Print each sample indented by depth.
-                    for (int i = 1; i < raw.sampleCount; i++)
+                    for (int i = 1; i < sampleLimit; i++)
                     {
                         float timeMs = raw.GetSampleTimeMs(i);
                         string name = raw.GetSampleName(i);
@@ -462,6 +584,12 @@ namespace LightningProfiler
                         sb.AppendLine();
                         sb.Append(' ', depth * 2);
                         sb.Append($"{name}: {timeMs:F2}ms");
+                    }
+
+                    if (raw.sampleCount > sampleLimit)
+                    {
+                        sb.AppendLine();
+                        sb.Append($"... ({raw.sampleCount - sampleLimit} more samples truncated)");
                     }
                 }
             }
@@ -508,64 +636,149 @@ namespace LightningProfiler
 
         void CheckAndAddFrame(int frame)
         {
+            float frameTimeMs;
             using (var iter = new ProfilerFrameDataIterator())
             {
                 iter.SetRoot(frame, 0);
-                if (iter.frameTimeMS >= m_ChartFilterThresholdMs)
-                    m_ThresholdHotFrames.Add(frame);
+                frameTimeMs = iter.frameTimeMS;
+            }
+            if (m_IgnoreEditorLoop)
+                frameTimeMs -= GetEditorLoopTimeMs(frame);
+            if (frameTimeMs >= m_ChartFilterThresholdMs)
+                m_ThresholdHotFrames.Add(frame);
+        }
+
+        void DrawCombinedHighlightStrip(Rect containerRect)
+        {
+            bool hasSpike = m_ChartFilterThresholdMs > 0f;
+            bool hasGc = m_GcFilterThresholdKB > 0f;
+
+            int frameCount = ProfilerUserSettings.frameCount;
+            int firstEmptyFrame = ProfilerDriver.lastFrameIndex + 1 - frameCount;
+            float sideWidth = Chart.kSideWidth;
+            int selectedFrame = (int)ProfilerWindow.selectedFrameIndex;
+            int selectedRelative = selectedFrame - firstEmptyFrame;
+
+            // --- Spike strip (top) ---
+            if (hasSpike)
+            {
+                var stripRect = GUILayoutUtility.GetRect(containerRect.width, k_ThresholdStripHeight);
+                if (Event.current.type == EventType.Repaint)
+                {
+                    var drawRect = new Rect(stripRect.x + sideWidth, stripRect.y, stripRect.width - sideWidth, k_ThresholdStripHeight);
+                    float frameWidth = drawRect.width / frameCount;
+
+                    EditorGUI.DrawRect(drawRect, new Color(0.18f, 0.18f, 0.18f, 0.9f));
+
+                    var hotColor = new Color(0.2f, 0.85f, 0.4f, 0.95f);
+                    foreach (var frame in m_ThresholdHotFrames)
+                    {
+                        int rel = frame - firstEmptyFrame;
+                        if (rel < 0 || rel >= frameCount) continue;
+                        EditorGUI.DrawRect(new Rect(drawRect.x + rel * frameWidth, drawRect.y, Mathf.Max(1f, frameWidth), k_ThresholdStripHeight), hotColor);
+                    }
+
+                    if (selectedRelative >= 0 && selectedRelative < frameCount)
+                        EditorGUI.DrawRect(new Rect(drawRect.x + selectedRelative * frameWidth, drawRect.y, Mathf.Max(2f, frameWidth), k_ThresholdStripHeight), new Color(1f, 1f, 1f, 0.8f));
+
+                    var labelRect = new Rect(stripRect.x + 2f, stripRect.y, sideWidth - 4f, k_ThresholdStripHeight);
+                    GUI.Label(labelRect, $">={m_ChartFilterThresholdMs:F0}ms", EditorStyles.miniLabel);
+                }
+            }
+
+            // --- GC strip (below spike) ---
+            if (hasGc)
+            {
+                var stripRect = GUILayoutUtility.GetRect(containerRect.width, k_GcStripHeight);
+                if (Event.current.type == EventType.Repaint)
+                {
+                    var drawRect = new Rect(stripRect.x + sideWidth, stripRect.y, stripRect.width - sideWidth, k_GcStripHeight);
+                    float frameWidth = drawRect.width / frameCount;
+
+                    EditorGUI.DrawRect(drawRect, new Color(0.18f, 0.18f, 0.18f, 0.9f));
+
+                    var gcColor = new Color(0.95f, 0.3f, 0.3f, 0.95f);
+                    foreach (var frame in m_GcHotFrames)
+                    {
+                        int rel = frame - firstEmptyFrame;
+                        if (rel < 0 || rel >= frameCount) continue;
+                        EditorGUI.DrawRect(new Rect(drawRect.x + rel * frameWidth, drawRect.y, Mathf.Max(1f, frameWidth), k_GcStripHeight), gcColor);
+                    }
+
+                    if (selectedRelative >= 0 && selectedRelative < frameCount)
+                        EditorGUI.DrawRect(new Rect(drawRect.x + selectedRelative * frameWidth, drawRect.y, Mathf.Max(2f, frameWidth), k_GcStripHeight), new Color(1f, 1f, 1f, 0.8f));
+
+                    var labelRect = new Rect(stripRect.x + 2f, stripRect.y, sideWidth - 4f, k_GcStripHeight);
+                    GUI.Label(labelRect, $">={m_GcFilterThresholdKB:F0}KB", EditorStyles.miniLabel);
+                }
             }
         }
 
-        void DrawThresholdFrameHighlightStrip(Rect containerRect)
+        static long GetFrameGcAllocBytes(int frameIndex, int threadIndex, bool excludeEditorLoop = false)
         {
-            int frameCount = ProfilerUserSettings.frameCount;
-            int firstEmptyFrame = ProfilerDriver.lastFrameIndex + 1 - frameCount;
-            int firstFrame = Mathf.Max(ProfilerDriver.firstFrameIndex, firstEmptyFrame);
+            long totalGcBytes = 0;
+            using (var raw = ProfilerDriver.GetRawFrameDataView(frameIndex, threadIndex))
+            {
+                if (raw == null || !raw.valid)
+                    return 0;
+                int gcMarkerId = raw.GetMarkerId("GC.Alloc");
+                if (gcMarkerId == FrameDataView.invalidMarkerId)
+                    return 0;
 
-            var stripRect = GUILayoutUtility.GetRect(containerRect.width, k_ThresholdStripHeight);
+                HashSet<int> editorIndices = null;
+                if (excludeEditorLoop)
+                    editorIndices = FindEditorLoopIndices(raw);
 
-            if (Event.current.type != EventType.Repaint)
+                for (int i = 0; i < raw.sampleCount; i++)
+                {
+                    if (editorIndices != null && editorIndices.Contains(i))
+                        continue;
+                    if (raw.GetSampleMarkerId(i) == gcMarkerId && raw.GetSampleMetadataCount(i) > 0)
+                        totalGcBytes += raw.GetSampleMetadataAsLong(i, 0);
+                }
+            }
+            return totalGcBytes;
+        }
+
+        void UpdateGcFrameMatches()
+        {
+            int lastFrame = ProfilerDriver.lastFrameIndex;
+            bool thresholdChanged = m_GcFilterThresholdKB != m_GcCachedThreshold;
+
+            if (!thresholdChanged && m_GcCachedLastFrame == lastFrame)
                 return;
 
-            float sideWidth = Chart.kSideWidth;
-            var drawRect = new Rect(stripRect.x + sideWidth, stripRect.y, stripRect.width - sideWidth, k_ThresholdStripHeight);
-            float frameWidth = drawRect.width / frameCount;
+            int firstFrame = ProfilerDriver.firstFrameIndex;
+            if (firstFrame < 0 || lastFrame < 0)
+                return;
 
-            // Draw greyout background for all frames
-            EditorGUI.DrawRect(drawRect, new Color(0.18f, 0.18f, 0.18f, 0.9f));
-
-            // Highlight hot frames (above threshold)
-            var hotColor = new Color(0.2f, 0.85f, 0.4f, 0.95f);
-            foreach (var frame in m_ThresholdHotFrames)
+            if (thresholdChanged)
             {
-                int relativeFrame = frame - firstEmptyFrame;
-                if (relativeFrame < 0 || relativeFrame >= frameCount)
-                    continue;
+                m_GcHotFrames.Clear();
+                m_GcCachedThreshold = m_GcFilterThresholdKB;
 
-                var barRect = new Rect(
-                    drawRect.x + relativeFrame * frameWidth,
-                    drawRect.y,
-                    Mathf.Max(1f, frameWidth),
-                    k_ThresholdStripHeight);
-                EditorGUI.DrawRect(barRect, hotColor);
+                int visibleFirst = Mathf.Max(firstFrame, lastFrame + 1 - ProfilerUserSettings.frameCount);
+                for (int frame = visibleFirst; frame <= lastFrame; frame++)
+                    CheckAndAddGcFrame(frame);
+            }
+            else
+            {
+                int scanFrom = Mathf.Max(firstFrame, m_GcCachedLastFrame + 1);
+                for (int frame = scanFrom; frame <= lastFrame; frame++)
+                    CheckAndAddGcFrame(frame);
+
+                if (m_GcHotFrames.Count > 0)
+                    m_GcHotFrames.RemoveWhere(f => f < firstFrame);
             }
 
-            // Draw selected frame indicator
-            int selectedFrame = (int)ProfilerWindow.selectedFrameIndex;
-            int selectedRelative = selectedFrame - firstEmptyFrame;
-            if (selectedRelative >= 0 && selectedRelative < frameCount)
-            {
-                var selRect = new Rect(
-                    drawRect.x + selectedRelative * frameWidth,
-                    drawRect.y,
-                    Mathf.Max(2f, frameWidth),
-                    k_ThresholdStripHeight);
-                EditorGUI.DrawRect(selRect, new Color(1f, 1f, 1f, 0.8f));
-            }
+            m_GcCachedLastFrame = lastFrame;
+        }
 
-            // Label
-            var labelRect = new Rect(stripRect.x + 2f, stripRect.y, sideWidth - 4f, k_ThresholdStripHeight);
-            GUI.Label(labelRect, $">={m_ChartFilterThresholdMs:F0}ms", EditorStyles.miniLabel);
+        void CheckAndAddGcFrame(int frame)
+        {
+            long gcBytes = GetFrameGcAllocBytes(frame, 0, m_IgnoreEditorLoop);
+            if (gcBytes >= (long)(m_GcFilterThresholdKB * 1024f))
+                m_GcHotFrames.Add(frame);
         }
 
         void OnSearchChanged(string newSearch)
