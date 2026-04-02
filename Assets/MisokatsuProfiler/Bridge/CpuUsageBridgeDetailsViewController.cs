@@ -126,9 +126,11 @@ namespace LightningProfiler
 
         // Save-only-marked-frames
         const string k_SaveMarkedOnlyKey = "LightningProfiler.SaveMarkedOnly";
+        const string k_DefaultFrameHistoryKey = "LightningProfiler.DefaultFrameHistory";
         bool m_SaveMarkedOnly;
-        readonly HashSet<int> m_MarkedFrameIndices = new HashSet<int>();
+        readonly List<string> m_MarkedFrameTempFiles = new List<string>();
         int m_DefaultFrameHistoryLength;
+        const int k_SaveMarkedBufferSize = 2; // minimum: marked frame is checkFrame=frameIndex-1, so buffer needs 2
 
 
         public CpuUsageBridgeDetailsViewController(ProfilerWindow profilerWindow)
@@ -170,6 +172,13 @@ namespace LightningProfiler
                     m_PauseCallbackSubscribed = false;
                 }
 
+                // Clean up any unsaved marked frame temp files
+                foreach (var f in m_MarkedFrameTempFiles)
+                {
+                    try { if (System.IO.File.Exists(f)) System.IO.File.Delete(f); } catch { }
+                }
+                m_MarkedFrameTempFiles.Clear();
+
                 if (m_FrameDataHierarchyView != null)
                 {
                     m_FrameDataHierarchyView.OnChangeViewType -= OnViewTypeChanged;
@@ -207,7 +216,17 @@ namespace LightningProfiler
             m_GcFilterThresholdKB = EditorPrefs.GetFloat(k_GcFilterThresholdKey, 0f);
             m_PauseOnGc = EditorPrefs.GetBool(k_PauseOnGcKey, false);
             m_SaveMarkedOnly = EditorPrefs.GetBool(k_SaveMarkedOnlyKey, false);
-            m_DefaultFrameHistoryLength = ProfilerUserSettings.frameCount;
+            if (m_SaveMarkedOnly)
+            {
+                // Restore the original frame count from before collect mode was enabled
+                m_DefaultFrameHistoryLength = EditorPrefs.GetInt(k_DefaultFrameHistoryKey, ProfilerUserSettings.frameCount);
+                // Re-apply the shrink (domain reload may have reset it)
+                ProfilerUserSettings.frameCount = k_SaveMarkedBufferSize;
+            }
+            else
+            {
+                m_DefaultFrameHistoryLength = ProfilerUserSettings.frameCount;
+            }
             UpdatePauseCallbackSubscription();
             m_Initialized = true;
         }
@@ -419,23 +438,107 @@ namespace LightningProfiler
 
             // --- Save marked only ---
             var newSaveMarked = GUILayout.Toggle(m_SaveMarkedOnly,
-                EditorGUIUtility.TrTextContent("Save marked only",
-                    "When enabled, the profiler buffer keeps only frames that match spike/GC/search filters. Non-matching frames are discarded as new ones arrive."),
+                EditorGUIUtility.TrTextContent($"Collect marked ({m_MarkedFrameTempFiles.Count})",
+                    "When enabled, each frame matching spike/GC/search is saved to a temp file. Use the Save button to merge them into a single .data file."),
                 EditorStyles.toolbarButton);
             if (newSaveMarked != m_SaveMarkedOnly)
             {
                 m_SaveMarkedOnly = newSaveMarked;
                 EditorPrefs.SetBool(k_SaveMarkedOnlyKey, m_SaveMarkedOnly);
-                if (!m_SaveMarkedOnly)
+                if (m_SaveMarkedOnly)
+                {
+                    // Persist the original frame count so it survives domain reloads
+                    m_DefaultFrameHistoryLength = ProfilerUserSettings.frameCount;
+                    EditorPrefs.SetInt(k_DefaultFrameHistoryKey, m_DefaultFrameHistoryLength);
+                    ProfilerUserSettings.frameCount = k_SaveMarkedBufferSize;
+                }
+                else
                 {
                     // Restore normal buffer size
-                    ProfilerDriver.SetMaxFrameHistoryLength(m_DefaultFrameHistoryLength);
+                    ProfilerUserSettings.frameCount = m_DefaultFrameHistoryLength;
                 }
-                m_MarkedFrameIndices.Clear();
                 UpdatePauseCallbackSubscription();
             }
 
+            using (new EditorGUI.DisabledScope(m_MarkedFrameTempFiles.Count == 0))
+            {
+                if (GUILayout.Button(
+                    EditorGUIUtility.TrTextContent("Save marked", "Merge all collected marked frames into a single .data file."),
+                    EditorStyles.toolbarButton))
+                {
+                    SaveMergedMarkedFrames();
+                }
+            }
+
             EditorGUILayout.EndHorizontal();
+        }
+
+        void SaveMergedMarkedFrames()
+        {
+            // Stop profiler recording via the ProfilerWindow (ProfilerDriver.enabled gets re-enabled by the window)
+            ProfilerWindow.SetRecordingEnabled(false);
+            if (EditorApplication.isPlaying && !EditorApplication.isPaused)
+                EditorApplication.isPaused = true;
+
+            // Disable collect mode so the callback stops saving temp files during merge
+            m_SaveMarkedOnly = false;
+            EditorPrefs.SetBool(k_SaveMarkedOnlyKey, false);
+            if (m_PauseCallbackSubscribed)
+            {
+                ProfilerDriver.NewProfilerFrameRecorded -= OnNewProfilerFrame;
+                m_PauseCallbackSubscribed = false;
+            }
+
+            var savePath = EditorUtility.SaveFilePanel("Save Marked Frames", "", "marked_profile", "data");
+            if (string.IsNullOrEmpty(savePath))
+                return;
+
+            // Remember current state
+            var tempFiles = new List<string>(m_MarkedFrameTempFiles);
+
+            // Restore large buffer so all merged frames fit
+            ProfilerUserSettings.frameCount = Mathf.Max(m_DefaultFrameHistoryLength, tempFiles.Count * k_SaveMarkedBufferSize + 10);
+            ProfilerDriver.ClearAllFrames();
+
+            // Load each temp file, appending frames
+            bool first = true;
+            foreach (var tempFile in tempFiles)
+            {
+                if (!System.IO.File.Exists(tempFile))
+                    continue;
+                ProfilerDriver.LoadProfile(tempFile, !first);
+                first = false;
+            }
+
+            // Save merged result
+            ProfilerDriver.SaveProfile(savePath);
+
+            // Cleanup temp files
+            foreach (var tempFile in tempFiles)
+            {
+                try { System.IO.File.Delete(tempFile); } catch { }
+            }
+            m_MarkedFrameTempFiles.Clear();
+
+            // Reload the merged file so user can see the result
+            ProfilerDriver.LoadProfile(savePath, false);
+
+            // Invalidate highlight caches so strips re-evaluate the loaded frames
+            m_ThresholdCachedLastFrame = -1;
+            m_ThresholdCachedValue = -1f;
+            m_ThresholdHotFrames.Clear();
+            m_GcCachedLastFrame = -1;
+            m_GcCachedThreshold = -1f;
+            m_GcHotFrames.Clear();
+            m_SearchMatchCachedLastFrame = -1;
+            m_SearchMatchCachedQuery = null;
+            m_SearchMatchFrames.Clear();
+            ProfilerWindow.Repaint();
+
+            // Restore normal buffer size (collect mode was disabled above)
+            ProfilerUserSettings.frameCount = m_DefaultFrameHistoryLength;
+
+            Debug.Log($"[LightningProfiler] Saved {tempFiles.Count} marked frame snapshots to: {savePath}");
         }
 
         /// Returns the total EditorLoop time in ms for the given frame (sums all EditorLoop samples).
@@ -537,32 +640,15 @@ namespace LightningProfiler
 
             bool isMarked = isSpike || isGcSpike || isSearchMatch;
 
-            // --- Save-marked-only: keep buffer just large enough for all marked frames ---
-            if (m_SaveMarkedOnly)
+            // --- Save-marked-only: save marked frame to temp .data file immediately ---
+            if (m_SaveMarkedOnly && isMarked)
             {
-                if (isMarked)
-                    m_MarkedFrameIndices.Add(checkFrame);
-
-                // Prune marked indices that already fell out of the buffer
-                int bufferFirst = ProfilerDriver.firstFrameIndex;
-                m_MarkedFrameIndices.RemoveWhere(f => f < bufferFirst);
-
-                if (m_MarkedFrameIndices.Count > 0)
-                {
-                    // Find oldest marked frame — buffer must span from there to newest
-                    int oldestMarked = int.MaxValue;
-                    foreach (var f in m_MarkedFrameIndices)
-                        if (f < oldestMarked) oldestMarked = f;
-
-                    // Set buffer just large enough: from oldest marked to current frame + 1 margin
-                    int neededSize = frameIndex - oldestMarked + 2;
-                    ProfilerDriver.SetMaxFrameHistoryLength(Mathf.Max(neededSize, m_MarkedFrameIndices.Count + 1));
-                }
-                else
-                {
-                    // No marked frames yet — keep minimal buffer
-                    ProfilerDriver.SetMaxFrameHistoryLength(2);
-                }
+                string tempDir = System.IO.Path.Combine(Application.temporaryCachePath, "MarkedFrames");
+                if (!System.IO.Directory.Exists(tempDir))
+                    System.IO.Directory.CreateDirectory(tempDir);
+                string tempPath = System.IO.Path.Combine(tempDir, $"marked_{checkFrame}.data");
+                ProfilerDriver.SaveProfile(tempPath);
+                m_MarkedFrameTempFiles.Add(tempPath);
             }
 
             // --- Pause logic (play mode only) ---
