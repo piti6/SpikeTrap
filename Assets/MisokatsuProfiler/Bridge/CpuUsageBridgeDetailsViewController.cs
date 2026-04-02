@@ -130,7 +130,7 @@ namespace LightningProfiler
         bool m_SaveMarkedOnly;
         readonly List<string> m_MarkedFrameTempFiles = new List<string>();
         int m_DefaultFrameHistoryLength;
-        const int k_SaveMarkedBufferSize = 2; // minimum: marked frame is checkFrame=frameIndex-1, so buffer needs 2
+        const int k_SaveMarkedBufferSize = 1;
 
 
         public CpuUsageBridgeDetailsViewController(ProfilerWindow profilerWindow)
@@ -541,6 +541,40 @@ namespace LightningProfiler
             Debug.Log($"[LightningProfiler] Saved {tempFiles.Count} marked frame snapshots to: {savePath}");
         }
 
+        bool IsFrameMarked(int frame)
+        {
+            if (m_ChartFilterThresholdMs > 0f)
+            {
+                float frameTimeMs;
+                using (var iter = new ProfilerFrameDataIterator())
+                {
+                    iter.SetRoot(frame, 0);
+                    frameTimeMs = iter.frameTimeMS;
+                }
+                if (m_IgnoreEditorLoop)
+                    frameTimeMs -= GetEditorLoopTimeMs(frame);
+                if (frameTimeMs >= m_ChartFilterThresholdMs)
+                    return true;
+            }
+
+            if (m_GcFilterThresholdKB > 0f)
+            {
+                long gcBytes = GetFrameGcAllocBytes(frame, 0, m_IgnoreEditorLoop);
+                if (gcBytes >= (long)(m_GcFilterThresholdKB * 1024f))
+                    return true;
+            }
+
+            if (!string.IsNullOrEmpty(m_SearchString))
+            {
+                int threadIndex = m_FrameDataHierarchyView.threadIndex;
+                if (threadIndex < 0) threadIndex = 0;
+                if (FrameContainsSearchTerm(frame, threadIndex, m_SearchString))
+                    return true;
+            }
+
+            return false;
+        }
+
         /// Returns the total EditorLoop time in ms for the given frame (sums all EditorLoop samples).
         static float GetEditorLoopTimeMs(int frameIndex)
         {
@@ -592,13 +626,28 @@ namespace LightningProfiler
 
         void OnNewProfilerFrame(int connectionId, int frameIndex)
         {
+            // --- Save-marked-only: check frameIndex directly (buffer=1, frameIndex-1 is gone) ---
+            if (m_SaveMarkedOnly)
+            {
+                bool saveIsMarked = IsFrameMarked(frameIndex);
+                if (saveIsMarked)
+                {
+                    string tempDir = System.IO.Path.Combine(Application.temporaryCachePath, "MarkedFrames");
+                    if (!System.IO.Directory.Exists(tempDir))
+                        System.IO.Directory.CreateDirectory(tempDir);
+                    string tempPath = System.IO.Path.Combine(tempDir, $"marked_{frameIndex}.data");
+                    ProfilerDriver.SaveProfile(tempPath);
+                    m_MarkedFrameTempFiles.Add(tempPath);
+                }
+            }
+
             int checkFrame = frameIndex - 1;
             if (checkFrame < ProfilerDriver.firstFrameIndex)
                 return;
 
             bool isPlaying = EditorApplication.isPlaying && !EditorApplication.isPaused;
 
-            // --- Determine if frame is "marked" by any active filter ---
+            // --- Determine if frame is "marked" by any active filter (for pause/log/highlight) ---
 
             // Check spike threshold.
             bool isSpike = false;
@@ -636,19 +685,6 @@ namespace LightningProfiler
                 if (threadIndex < 0) threadIndex = 0;
                 if (FrameContainsSearchTerm(checkFrame, threadIndex, m_SearchString))
                     isSearchMatch = true;
-            }
-
-            bool isMarked = isSpike || isGcSpike || isSearchMatch;
-
-            // --- Save-marked-only: save marked frame to temp .data file immediately ---
-            if (m_SaveMarkedOnly && isMarked)
-            {
-                string tempDir = System.IO.Path.Combine(Application.temporaryCachePath, "MarkedFrames");
-                if (!System.IO.Directory.Exists(tempDir))
-                    System.IO.Directory.CreateDirectory(tempDir);
-                string tempPath = System.IO.Path.Combine(tempDir, $"marked_{checkFrame}.data");
-                ProfilerDriver.SaveProfile(tempPath);
-                m_MarkedFrameTempFiles.Add(tempPath);
             }
 
             // --- Pause logic (play mode only) ---
