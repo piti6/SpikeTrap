@@ -94,13 +94,13 @@ namespace LightningProfiler
         int m_ThresholdCachedLastFrame = -1;
         const float k_ThresholdStripHeight = 8f;
 
-        // Pause-on-spike
+        // Pause-on-spike / pause-on-match
         const string k_PauseOnSpikeKey = "LightningProfiler.PauseOnSpike";
+        const string k_PauseOnMatchKey = "LightningProfiler.PauseOnMatch";
         bool m_PauseOnSpike;
-        bool m_PauseOnSpikeSubscribed;
+        bool m_PauseOnMatch;
+        bool m_PauseCallbackSubscribed;
 
-        // Chart overlay
-        IMGUIContainer m_ChartOverlay;
 
         public CpuUsageBridgeDetailsViewController(ProfilerWindow profilerWindow)
             : base(profilerWindow)
@@ -128,39 +128,17 @@ namespace LightningProfiler
 
         void AttachChartOverlay()
         {
-            if (m_ChartOverlay != null)
-                return;
-
-            // Find the chart IMGUI container in the profiler window's visual tree.
-            var chartContainer = ProfilerWindow.rootVisualElement.Q<IMGUIContainer>(
-                "toolbar-and-charts__legacy-imgui-container");
-            if (chartContainer == null)
-                return;
-
-            m_ChartOverlay = new IMGUIContainer(DrawChartOverlay);
-            m_ChartOverlay.pickingMode = PickingMode.Ignore;
-            m_ChartOverlay.style.position = Position.Absolute;
-            m_ChartOverlay.style.left = 0;
-            m_ChartOverlay.style.top = 0;
-            m_ChartOverlay.style.right = 0;
-            m_ChartOverlay.style.bottom = 0;
-            chartContainer.Add(m_ChartOverlay);
+            // Chart overlay removed — using the threshold strip below the chart instead.
         }
 
         protected override void Dispose(bool disposing)
         {
             if (disposing)
             {
-                if (m_PauseOnSpikeSubscribed)
+                if (m_PauseCallbackSubscribed)
                 {
                     ProfilerDriver.NewProfilerFrameRecorded -= OnNewProfilerFrame;
-                    m_PauseOnSpikeSubscribed = false;
-                }
-
-                if (m_ChartOverlay != null)
-                {
-                    m_ChartOverlay.RemoveFromHierarchy();
-                    m_ChartOverlay = null;
+                    m_PauseCallbackSubscribed = false;
                 }
 
                 if (m_FrameDataHierarchyView != null)
@@ -194,7 +172,8 @@ namespace LightningProfiler
             m_ViewType = (CpuProfilerViewType)EditorPrefs.GetInt(k_SettingsKeyPrefix + "ViewType", (int)CpuProfilerViewType.Timeline);
             m_ChartFilterThresholdMs = EditorPrefs.GetFloat(k_ChartFilterThresholdKey, 0f);
             m_PauseOnSpike = EditorPrefs.GetBool(k_PauseOnSpikeKey, false);
-            UpdatePauseOnSpikeSubscription();
+            m_PauseOnMatch = EditorPrefs.GetBool(k_PauseOnMatchKey, false);
+            UpdatePauseCallbackSubscription();
             m_Initialized = true;
         }
 
@@ -308,7 +287,7 @@ namespace LightningProfiler
                 if (module != null)
                     module.SetChartFilterThreshold(m_ChartFilterThresholdMs);
 
-                UpdatePauseOnSpikeSubscription();
+                UpdatePauseCallbackSubscription();
             }
 
             if (m_ChartFilterThresholdMs > 0f)
@@ -322,7 +301,20 @@ namespace LightningProfiler
                 {
                     m_PauseOnSpike = newPause;
                     EditorPrefs.SetBool(k_PauseOnSpikeKey, m_PauseOnSpike);
-                    UpdatePauseOnSpikeSubscription();
+                    UpdatePauseCallbackSubscription();
+                }
+            }
+
+            using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(m_SearchString)))
+            {
+                var newMatch = GUILayout.Toggle(m_PauseOnMatch,
+                    EditorGUIUtility.TrTextContent("Pause on match", "Pause play mode when a frame contains a sample matching the search term."),
+                    EditorStyles.toolbarButton);
+                if (newMatch != m_PauseOnMatch)
+                {
+                    m_PauseOnMatch = newMatch;
+                    EditorPrefs.SetBool(k_PauseOnMatchKey, m_PauseOnMatch);
+                    UpdatePauseCallbackSubscription();
                 }
             }
 
@@ -330,104 +322,114 @@ namespace LightningProfiler
             EditorGUILayout.EndHorizontal();
         }
 
-        void UpdatePauseOnSpikeSubscription()
+        void UpdatePauseCallbackSubscription()
         {
-            bool shouldSubscribe = m_PauseOnSpike && m_ChartFilterThresholdMs > 0f;
-            if (shouldSubscribe && !m_PauseOnSpikeSubscribed)
+            bool needSpike = m_PauseOnSpike && m_ChartFilterThresholdMs > 0f;
+            bool needMatch = m_PauseOnMatch && !string.IsNullOrEmpty(m_SearchString);
+            bool shouldSubscribe = needSpike || needMatch;
+
+            if (shouldSubscribe && !m_PauseCallbackSubscribed)
             {
                 ProfilerDriver.NewProfilerFrameRecorded += OnNewProfilerFrame;
-                m_PauseOnSpikeSubscribed = true;
+                m_PauseCallbackSubscribed = true;
             }
-            else if (!shouldSubscribe && m_PauseOnSpikeSubscribed)
+            else if (!shouldSubscribe && m_PauseCallbackSubscribed)
             {
                 ProfilerDriver.NewProfilerFrameRecorded -= OnNewProfilerFrame;
-                m_PauseOnSpikeSubscribed = false;
+                m_PauseCallbackSubscribed = false;
             }
         }
 
         void OnNewProfilerFrame(int connectionId, int frameIndex)
         {
-            if (!m_PauseOnSpike || m_ChartFilterThresholdMs <= 0f || !EditorApplication.isPlaying)
+            if (!EditorApplication.isPlaying || EditorApplication.isPaused)
                 return;
 
-            using (var iter = new ProfilerFrameDataIterator())
+            int checkFrame = frameIndex - 1;
+            if (checkFrame < ProfilerDriver.firstFrameIndex)
+                return;
+
+            bool shouldPause = false;
+
+            // Check spike threshold.
+            if (m_PauseOnSpike && m_ChartFilterThresholdMs > 0f)
             {
-                iter.SetRoot(frameIndex, 0);
-                float frameMs = (float)iter.frameTimeMS;
-                if (frameMs >= m_ChartFilterThresholdMs)
+                using (var iter = new ProfilerFrameDataIterator())
                 {
-                    EditorApplication.isPaused = true;
+                    iter.SetRoot(checkFrame, 0);
+                    if (iter.frameTimeMS >= m_ChartFilterThresholdMs)
+                        shouldPause = true;
                 }
             }
-        }
 
-        void DrawChartOverlay()
-        {
-            if (m_ChartFilterThresholdMs <= 0f || Event.current.type != EventType.Repaint)
-                return;
-
-            // Ensure threshold data is up to date.
-            UpdateThresholdFrameMatches();
-
-            // The overlay covers the entire chart IMGUI container.
-            // The chart drawing area starts at Chart.kSideWidth from the left.
-            var containerRect = m_ChartOverlay.contentRect;
-            if (containerRect.width <= 0 || containerRect.height <= 0)
-                return;
-
-            float sideWidth = Chart.kSideWidth;
-            int frameCount = ProfilerUserSettings.frameCount;
-            int firstEmptyFrame = ProfilerDriver.lastFrameIndex + 1 - frameCount;
-            float chartWidth = containerRect.width - sideWidth;
-            if (chartWidth <= 0)
-                return;
-
-            float frameWidth = chartWidth / frameCount;
-            var greyColor = new Color(0.1f, 0.1f, 0.1f, 0.55f);
-
-            // Grey out frames below threshold (those NOT in m_ThresholdHotFrames).
-            for (int f = 0; f < frameCount; f++)
+            // Check search term match.
+            if (!shouldPause && m_PauseOnMatch && !string.IsNullOrEmpty(m_SearchString))
             {
-                int frameIndex = firstEmptyFrame + f;
-                if (m_ThresholdHotFrames.Contains(frameIndex))
-                    continue;
+                int threadIndex = m_FrameDataHierarchyView.threadIndex;
+                if (threadIndex < 0) threadIndex = 0;
+                if (FrameContainsSearchTerm(checkFrame, threadIndex, m_SearchString))
+                    shouldPause = true;
+            }
 
-                // Only grey out frames that actually have data (positive frame index).
-                if (frameIndex < ProfilerDriver.firstFrameIndex)
-                    continue;
+            if (shouldPause && EditorApplication.isPlaying)
+            {
+                var pauseFrame = checkFrame;
 
-                var barRect = new Rect(
-                    sideWidth + f * frameWidth,
-                    0f,
-                    Mathf.Max(1f, frameWidth),
-                    containerRect.height);
-                EditorGUI.DrawRect(barRect, greyColor);
+                void Pause()
+                {
+                    EditorApplication.delayCall -= Pause;
+                    EditorApplication.isPaused = true;
+                    m_ProfilerWindowController.selectedFrameIndex = pauseFrame;
+                }
+
+                EditorApplication.delayCall += Pause;
             }
         }
 
         void UpdateThresholdFrameMatches()
         {
             int lastFrame = ProfilerDriver.lastFrameIndex;
-            if (m_ChartFilterThresholdMs == m_ThresholdCachedValue && m_ThresholdCachedLastFrame == lastFrame)
-                return;
+            bool thresholdChanged = m_ChartFilterThresholdMs != m_ThresholdCachedValue;
 
-            m_ThresholdHotFrames.Clear();
-            m_ThresholdCachedValue = m_ChartFilterThresholdMs;
-            m_ThresholdCachedLastFrame = lastFrame;
+            if (!thresholdChanged && m_ThresholdCachedLastFrame == lastFrame)
+                return;
 
             int firstFrame = ProfilerDriver.firstFrameIndex;
             if (firstFrame < 0 || lastFrame < 0)
                 return;
 
-            for (int frame = firstFrame; frame <= lastFrame; frame++)
+            if (thresholdChanged)
             {
-                using (var iter = new ProfilerFrameDataIterator())
-                {
-                    iter.SetRoot(frame, 0);
-                    float frameMs = (float)iter.frameTimeMS;
-                    if (frameMs >= m_ChartFilterThresholdMs)
-                        m_ThresholdHotFrames.Add(frame);
-                }
+                // Full rescan needed — but limit to visible range only.
+                m_ThresholdHotFrames.Clear();
+                m_ThresholdCachedValue = m_ChartFilterThresholdMs;
+
+                int visibleFirst = Mathf.Max(firstFrame, lastFrame + 1 - ProfilerUserSettings.frameCount);
+                for (int frame = visibleFirst; frame <= lastFrame; frame++)
+                    CheckAndAddFrame(frame);
+            }
+            else
+            {
+                // Incremental — only scan new frames since last check.
+                int scanFrom = Mathf.Max(firstFrame, m_ThresholdCachedLastFrame + 1);
+                for (int frame = scanFrom; frame <= lastFrame; frame++)
+                    CheckAndAddFrame(frame);
+
+                // Trim frames that fell out of the available range.
+                if (m_ThresholdHotFrames.Count > 0)
+                    m_ThresholdHotFrames.RemoveWhere(f => f < firstFrame);
+            }
+
+            m_ThresholdCachedLastFrame = lastFrame;
+        }
+
+        void CheckAndAddFrame(int frame)
+        {
+            using (var iter = new ProfilerFrameDataIterator())
+            {
+                iter.SetRoot(frame, 0);
+                if (iter.frameTimeMS >= m_ChartFilterThresholdMs)
+                    m_ThresholdHotFrames.Add(frame);
             }
         }
 
@@ -489,6 +491,7 @@ namespace LightningProfiler
             m_SearchMatchFrames.Clear();
             m_SearchMatchCachedQuery = null;
             m_SearchMatchCachedLastFrame = -1;
+            UpdatePauseCallbackSubscription();
             ProfilerWindow.Repaint();
         }
 
@@ -501,12 +504,10 @@ namespace LightningProfiler
             }
 
             int lastFrame = ProfilerDriver.lastFrameIndex;
-            if (m_SearchString == m_SearchMatchCachedQuery && m_SearchMatchCachedLastFrame == lastFrame)
-                return;
+            bool queryChanged = m_SearchString != m_SearchMatchCachedQuery;
 
-            m_SearchMatchFrames.Clear();
-            m_SearchMatchCachedQuery = m_SearchString;
-            m_SearchMatchCachedLastFrame = lastFrame;
+            if (!queryChanged && m_SearchMatchCachedLastFrame == lastFrame)
+                return;
 
             int firstFrame = ProfilerDriver.firstFrameIndex;
             if (firstFrame < 0 || lastFrame < 0)
@@ -516,11 +517,32 @@ namespace LightningProfiler
             if (threadIndex < 0)
                 threadIndex = 0;
 
-            for (int frame = firstFrame; frame <= lastFrame; frame++)
+            if (queryChanged)
             {
-                if (FrameContainsSearchTerm(frame, threadIndex, m_SearchString))
-                    m_SearchMatchFrames.Add(frame);
+                // Full rescan — limit to visible range.
+                m_SearchMatchFrames.Clear();
+                m_SearchMatchCachedQuery = m_SearchString;
+
+                int visibleFirst = Mathf.Max(firstFrame, lastFrame + 1 - ProfilerUserSettings.frameCount);
+                for (int frame = visibleFirst; frame <= lastFrame; frame++)
+                {
+                    if (FrameContainsSearchTerm(frame, threadIndex, m_SearchString))
+                        m_SearchMatchFrames.Add(frame);
+                }
             }
+            else
+            {
+                // Incremental — only scan new frames.
+                int scanFrom = Mathf.Max(firstFrame, m_SearchMatchCachedLastFrame + 1);
+                for (int frame = scanFrom; frame <= lastFrame; frame++)
+                {
+                    if (FrameContainsSearchTerm(frame, threadIndex, m_SearchString))
+                        m_SearchMatchFrames.Add(frame);
+                }
+                m_SearchMatchFrames.RemoveWhere(f => f < firstFrame);
+            }
+
+            m_SearchMatchCachedLastFrame = lastFrame;
         }
 
         static bool FrameContainsSearchTerm(int frameIndex, int threadIndex, string search)

@@ -33,11 +33,11 @@ namespace LightningProfiler
         public CpuUsageProfilerModule()
             : base(k_ChartCounters, ProfilerModuleChartType.StackedTimeArea)
         {
-            SetChartFilterThreshold(UnityEditor.EditorPrefs.GetFloat(k_ChartFilterThresholdKey, 0f));
         }
 
         public override ProfilerModuleViewController CreateDetailsViewController()
         {
+            SetChartFilterThreshold(UnityEditor.EditorPrefs.GetFloat(k_ChartFilterThresholdKey, 0f));
             return CpuUsageBridgeDetailsViewController.CreateDetailsViewController(ProfilerWindow);
         }
 
