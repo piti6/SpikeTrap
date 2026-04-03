@@ -1,0 +1,17 @@
+{
+  "name": "com.piti6.lightning-profiler",
+  "version": "0.1.0",
+  "displayName": "Lightning Profiler",
+  "description": "An enhanced CPU profiler module for the Unity Editor featuring spike detection with auto-pause and full call-stack logging, per-frame threshold filtering with visual highlight strips, search-based frame matching with auto-pause, and a custom timeline and hierarchy view.",
+  "unity": "2022.3",
+  "keywords": [
+    "profiler",
+    "cpu",
+    "spike",
+    "performance",
+    "optimization"
+  ],
+  "author": {
+    "name": "piti6"
+  }
+}
