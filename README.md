@@ -30,10 +30,10 @@ An enhanced CPU profiler module for the Unity Editor that replaces the default C
 
 Add via Unity Package Manager using the git URL:
 ```
-https://github.com/piti6/LightningProfiler.git?path=Assets/LightningProfiler
+https://github.com/piti6/LightningProfiler.git?path=Packages/com.piti6.lightning-profiler
 ```
 
-Or clone the repository and copy the `Assets/LightningProfiler` folder into your project's `Packages/` directory.
+Or clone the repository and copy the `Packages/com.piti6.lightning-profiler` folder into your project's `Packages/` directory.
 
 ## Usage
 
