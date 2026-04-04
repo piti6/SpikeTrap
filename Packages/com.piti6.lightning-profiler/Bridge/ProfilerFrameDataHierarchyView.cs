@@ -12,26 +12,6 @@ using System.Linq;
 
 namespace LightningProfiler
 {
-    public class SimpleSampleNameProvider : IProfilerSampleNameProvider
-    {
-        public readonly static SimpleSampleNameProvider Instance = new SimpleSampleNameProvider();
-
-        string IProfilerSampleNameProvider.GetItemName(HierarchyFrameDataView frameData, int itemId)
-        {
-            return frameData.GetItemName(itemId);
-        }
-
-        string IProfilerSampleNameProvider.GetMarkerName(HierarchyFrameDataView frameData, int markerId)
-        {
-            return frameData.GetMarkerName(markerId);
-        }
-
-        string IProfilerSampleNameProvider.GetItemName(RawFrameDataView frameData, int itemId)
-        {
-            return frameData.GetSampleName(itemId);
-        }
-    }
-
     [Serializable]
     internal class ProfilerFrameDataHierarchyView
     {
@@ -182,30 +162,9 @@ namespace LightningProfiler
         {
             EditorGUIUtility.TrTextContent("Hierarchy"),
         };
-
-        static readonly int[] kCPUProfilerViewTypes = new int[]
-        {
-            (int)CpuProfilerViewType.Hierarchy,
-        };
-
-        public event Action<CpuProfilerViewType> OnChangeViewType = viewType => { };
+        
         public event Action<bool> OnToggleLive = on => { };
         public event Action<string, string, int> userChangedThread = delegate { };
-
-        protected void DrawViewTypePopup(CpuProfilerViewType viewType)
-        {
-            DrawViewTypePopup(viewType, OnChangeViewType.Invoke);
-        }
-
-        public void DrawViewTypePopup(CpuProfilerViewType viewType, Action<CpuProfilerViewType> onViewTypeChanged)
-        {
-            var newViewType = (CpuProfilerViewType)EditorGUILayout.IntPopup((int)viewType, kCPUProfilerViewTypeNames, kCPUProfilerViewTypes, BaseStyles.viewTypeToolbarDropDown, GUILayout.Width(BaseStyles.viewTypeToolbarDropDown.fixedWidth));
-            if (newViewType != viewType)
-            {
-                onViewTypeChanged.Invoke(newViewType);
-                GUIUtility.ExitGUI();
-            }
-        }
 
         protected void DrawLiveUpdateToggle(bool updateViewLive)
         {
@@ -252,8 +211,6 @@ namespace LightningProfiler
         public delegate void SearchChangedCallback(string newSearch);
         public event SearchChangedCallback searchChanged;
 
-        private bool m_Initialized;
-
         public ProfilerFrameDataHierarchyView() : this("Profiler.CPUProfilerModule.HierarchyView.") { }
 
         public ProfilerFrameDataHierarchyView(string serializationPrefKeyPrefix)
@@ -295,15 +252,13 @@ namespace LightningProfiler
             // Check if it already exists (deserialized from window layout file or scriptable object)
             if (m_TreeViewState == null)
                 m_TreeViewState = new TreeViewState();
-            m_TreeView = new ProfilerFrameDataTreeView(m_TreeViewState, multiColumnHeader, SimpleSampleNameProvider.Instance, m_profilerWindow);
+            m_TreeView = new ProfilerFrameDataTreeView(m_TreeViewState, multiColumnHeader, new SimpleSampleNameProvider(), m_profilerWindow);
             m_TreeView.selectionChanged += OnMainTreeViewSelectionChanged;
             m_TreeView.searchChanged += OnMainTreeViewSearchChanged;
             m_TreeView.Reload();
 
             m_SearchField = new SearchField();
             m_SearchField.downOrUpArrowKeyPressed += m_TreeView.SetFocusAndEnsureSelectedItem;
-
-            m_Initialized = true;
         }
 
         void OnFrameDataViewAboutToBeDisposed()
@@ -421,13 +376,13 @@ namespace LightningProfiler
             }
         }
 
-        public void DoGUI(HierarchyFrameDataView frameDataView, bool isLive, CpuProfilerViewType viewType)
+        public void DoGUI(HierarchyFrameDataView frameDataView, bool isLive)
         {
             bool live = isLive;
-            DoGUI(frameDataView, true, ref live, viewType, null);
+            DoGUI(frameDataView, true, ref live, null);
         }
 
-        public void DoGUI(HierarchyFrameDataView frameDataView, bool fetchData, ref bool updateViewLive, CpuProfilerViewType viewType, Action drawOptionsMenu)
+        public void DoGUI(HierarchyFrameDataView frameDataView, bool fetchData, ref bool updateViewLive, Action drawOptionsMenu)
         {
             var isSearchAllowed = string.IsNullOrEmpty(treeView.searchString) ||
                 !(m_profilerWindow.ProfilerWindowOverheadIsAffectingProfilingRecordingData() && ProfilerDriver.deepProfiling);
@@ -438,7 +393,7 @@ namespace LightningProfiler
             if (isDataAvailable && (m_ThreadIndex != frameDataView.threadIndex || m_ThreadName != frameDataView.threadName))
                 SyncThreadStateFromFrameData(frameDataView);
 
-            DrawHierarchyToolbar(frameDataView, fetchData, ref updateViewLive, viewType, drawOptionsMenu);
+            DrawHierarchyToolbar(frameDataView, fetchData, ref updateViewLive, drawOptionsMenu);
 
             if (!isDataAvailable)
             {
@@ -489,7 +444,7 @@ namespace LightningProfiler
             treeView.searchString = m_SearchField.OnToolbarGUI(rect, treeView.searchString);
         }
 
-        void DrawHierarchyToolbar(HierarchyFrameDataView frameDataView, bool fetchData, ref bool updateViewLive, CpuProfilerViewType viewType, Action drawOptionsMenu)
+        void DrawHierarchyToolbar(HierarchyFrameDataView frameDataView, bool fetchData, ref bool updateViewLive, Action drawOptionsMenu)
         {
             EditorGUILayout.BeginHorizontal(BaseStyles.toolbar);
 

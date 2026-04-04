@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using UnityEditor.Profiling;
 using System;
 using UnityEditor;
-using UnityEditorInternal.Profiling;
 using UnityEngine;
 using UnityEngine.Assertions;
 using Unity.Profiling;

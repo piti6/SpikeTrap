@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Text;
 using Unity.Profiling.Editor;
 using UnityEditor;
-using UnityEditor.Graphs;
 using UnityEditor.Profiling;
 using UnityEditorInternal;
 using UnityEngine;
@@ -76,7 +75,6 @@ namespace LightningProfiler
         readonly UnityProfilerWindowControllerAdapter m_ProfilerWindowController;
 
         ProfilerFrameDataHierarchyView m_FrameDataHierarchyView;
-        CpuProfilerViewType m_ViewType = CpuProfilerViewType.Hierarchy;
         bool m_UpdateViewLive;
         bool m_Initialized;
         float m_ChartFilterThresholdMs;
@@ -126,6 +124,9 @@ namespace LightningProfiler
         readonly List<string> m_MarkedFrameTempFiles = new List<string>();
         int m_DefaultFrameHistoryLength;
         const int k_SaveMarkedBufferSize = 1;
+        private static readonly HierarchyFrameDataView.ViewModes _viewMode =
+            HierarchyFrameDataView.ViewModes.MergeSamplesWithTheSameName |
+            HierarchyFrameDataView.ViewModes.HideEditorOnlySamples;
 
 
         public CpuUsageBridgeDetailsViewController(ProfilerWindow profilerWindow)
@@ -176,7 +177,6 @@ namespace LightningProfiler
 
                 if (m_FrameDataHierarchyView != null)
                 {
-                    m_FrameDataHierarchyView.OnChangeViewType -= OnViewTypeChanged;
                     m_FrameDataHierarchyView.OnToggleLive -= OnHierarchyLiveToggle;
                     m_FrameDataHierarchyView.userChangedThread -= OnUserChangedThread;
                     m_FrameDataHierarchyView.searchChanged -= OnSearchChanged;
@@ -194,13 +194,11 @@ namespace LightningProfiler
 
             m_FrameDataHierarchyView = new ProfilerFrameDataHierarchyView(k_SettingsKeyPrefix + "HierarchyView.");
             m_FrameDataHierarchyView.OnEnable(m_ProfilerWindowController);
-            m_FrameDataHierarchyView.OnChangeViewType += OnViewTypeChanged;
             m_FrameDataHierarchyView.OnToggleLive += OnHierarchyLiveToggle;
             m_FrameDataHierarchyView.userChangedThread += OnUserChangedThread;
             m_FrameDataHierarchyView.searchChanged += OnSearchChanged;
             m_FrameDataHierarchyView.hideSearchBar = true;
 
-            m_ViewType = (CpuProfilerViewType)EditorPrefs.GetInt(k_SettingsKeyPrefix + "ViewType", (int)CpuProfilerViewType.Hierarchy);
             m_ChartFilterThresholdMs = EditorPrefs.GetFloat(k_ChartFilterThresholdKey, 0f);
             m_PauseOnFilter = EditorPrefs.GetBool(k_PauseOnFilterKey, false);
             m_LogOnFilter = EditorPrefs.GetBool(k_LogOnFilterKey, false);
@@ -251,7 +249,7 @@ namespace LightningProfiler
                 DrawCombinedHighlightStrip(rect);
 
             var frameData = fetchData ? GetFrameDataViewForHierarchy() : null;
-            m_FrameDataHierarchyView.DoGUI(frameData, fetchData, ref m_UpdateViewLive, m_ViewType, null);
+            m_FrameDataHierarchyView.DoGUI(frameData, fetchData, ref m_UpdateViewLive, null);
         }
 
         HierarchyFrameDataView GetFrameDataViewForHierarchy()
@@ -261,37 +259,22 @@ namespace LightningProfiler
 
         HierarchyFrameDataView GetFrameDataView(string threadGroupName, string threadName, ulong threadId)
         {
-            var viewMode = HierarchyFrameDataView.ViewModes.Default;
-            if (m_ViewType == CpuProfilerViewType.Hierarchy)
-                viewMode |= HierarchyFrameDataView.ViewModes.MergeSamplesWithTheSameName;
-
             return m_ProfilerWindowController.GetFrameDataView(
                 threadGroupName,
                 threadName,
                 threadId,
-                viewMode,
+                _viewMode,
                 m_FrameDataHierarchyView.sortedProfilerColumn,
                 m_FrameDataHierarchyView.sortedProfilerColumnAscending);
         }
 
         HierarchyFrameDataView GetFrameDataView(int threadIndex)
         {
-            var viewMode = HierarchyFrameDataView.ViewModes.Default;
-            if (m_ViewType == CpuProfilerViewType.Hierarchy)
-                viewMode |= HierarchyFrameDataView.ViewModes.MergeSamplesWithTheSameName;
-
             return m_ProfilerWindowController.GetFrameDataView(
                 threadIndex,
-                viewMode,
+                _viewMode,
                 m_FrameDataHierarchyView.sortedProfilerColumn,
                 m_FrameDataHierarchyView.sortedProfilerColumnAscending);
-        }
-
-        void OnViewTypeChanged(CpuProfilerViewType viewType)
-        {
-            m_ViewType = viewType;
-            EditorPrefs.SetInt(k_SettingsKeyPrefix + "ViewType", (int)m_ViewType);
-            ProfilerWindow.Repaint();
         }
 
         void OnHierarchyLiveToggle(bool live)
