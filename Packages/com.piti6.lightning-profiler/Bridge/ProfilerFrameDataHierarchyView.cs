@@ -180,16 +180,12 @@ namespace LightningProfiler
 
         static readonly GUIContent[] kCPUProfilerViewTypeNames = new GUIContent[]
         {
-            EditorGUIUtility.TrTextContent("Timeline"),
             EditorGUIUtility.TrTextContent("Hierarchy"),
-            EditorGUIUtility.TrTextContent("Raw Hierarchy")
         };
 
         static readonly int[] kCPUProfilerViewTypes = new int[]
         {
-            (int)CpuProfilerViewType.Timeline,
             (int)CpuProfilerViewType.Hierarchy,
-            (int)CpuProfilerViewType.RawHierarchy
         };
 
         public event Action<CpuProfilerViewType> OnChangeViewType = viewType => { };
@@ -480,6 +476,13 @@ namespace LightningProfiler
             HandleKeyboardEvents();
         }
 
+        public bool hideSearchBar { get; set; }
+
+        public void DrawSearchBarExternal()
+        {
+            DrawSearchBar();
+        }
+
         void DrawSearchBar()
         {
             var rect = GUILayoutUtility.GetRect(50f, 300f, EditorGUI.kSingleLineHeight, EditorGUI.kSingleLineHeight, EditorStyles.toolbarSearchField);
@@ -489,8 +492,6 @@ namespace LightningProfiler
         void DrawHierarchyToolbar(HierarchyFrameDataView frameDataView, bool fetchData, ref bool updateViewLive, CpuProfilerViewType viewType, Action drawOptionsMenu)
         {
             EditorGUILayout.BeginHorizontal(BaseStyles.toolbar);
-
-            DrawViewTypePopup(viewType);
 
             DrawLiveUpdateToggleRef(ref updateViewLive);
 
@@ -507,7 +508,8 @@ namespace LightningProfiler
 
             GUILayout.FlexibleSpace();
 
-            DrawSearchBar();
+            if (!hideSearchBar)
+                DrawSearchBar();
 
             if (m_DetailedPanelType == DetailedPanelType.None)
             {
