@@ -208,7 +208,7 @@ namespace LightningProfiler
             if (m_SaveMarkedOnly)
             {
                 // Restore the original frame count from before collect mode was enabled
-                m_DefaultFrameHistoryLength = EditorPrefs.GetInt(k_DefaultFrameHistoryKey, ProfilerUserSettings.frameCount);
+                m_DefaultFrameHistoryLength = Mathf.Clamp(EditorPrefs.GetInt(k_DefaultFrameHistoryKey, ProfilerUserSettings.frameCount), 1, 2000);
                 // Re-apply the shrink (domain reload may have reset it)
                 ProfilerUserSettings.frameCount = k_SaveMarkedBufferSize;
             }
@@ -216,6 +216,18 @@ namespace LightningProfiler
             {
                 m_DefaultFrameHistoryLength = ProfilerUserSettings.frameCount;
             }
+            // Recover temp files from previous session (list doesn't survive domain reload)
+            string tempDir = System.IO.Path.Combine(Application.temporaryCachePath, "MarkedFrames");
+            if (System.IO.Directory.Exists(tempDir))
+            {
+                var existing = System.IO.Directory.GetFiles(tempDir, "marked_*.data");
+                if (existing.Length > 0)
+                {
+                    System.Array.Sort(existing);
+                    m_MarkedFrameTempFiles.AddRange(existing);
+                }
+            }
+
             UpdatePauseCallbackSubscription();
             m_Initialized = true;
         }
@@ -393,7 +405,7 @@ namespace LightningProfiler
                 else
                 {
                     // Restore normal buffer size
-                    ProfilerUserSettings.frameCount = m_DefaultFrameHistoryLength;
+                    ProfilerUserSettings.frameCount = Mathf.Clamp(m_DefaultFrameHistoryLength, 1, 2000);
                 }
                 UpdatePauseCallbackSubscription();
             }
@@ -434,8 +446,8 @@ namespace LightningProfiler
             // Remember current state
             var tempFiles = new List<string>(m_MarkedFrameTempFiles);
 
-            // Restore large buffer so all merged frames fit
-            ProfilerUserSettings.frameCount = Mathf.Max(m_DefaultFrameHistoryLength, tempFiles.Count * k_SaveMarkedBufferSize + 10);
+            // Set buffer to max allowed (2000) to fit as many merged frames as possible
+            ProfilerUserSettings.frameCount = 2000;
             ProfilerDriver.ClearAllFrames();
 
             // Load each temp file, appending frames
@@ -458,8 +470,13 @@ namespace LightningProfiler
             }
             m_MarkedFrameTempFiles.Clear();
 
-            // Reload the merged file so user can see the result
+            // Reload merged file with max buffer
+            ProfilerUserSettings.frameCount = 2000;
             ProfilerDriver.LoadProfile(savePath, false);
+
+            // Fit frame count to actual loaded range (capped at 2000)
+            int loadedCount = ProfilerDriver.lastFrameIndex - ProfilerDriver.firstFrameIndex + 1;
+            ProfilerUserSettings.frameCount = Mathf.Clamp(Mathf.Max(m_DefaultFrameHistoryLength, loadedCount + 10), 1, 2000);
 
             // Invalidate highlight caches so strips re-evaluate the loaded frames
             m_ThresholdCachedLastFrame = -1;
@@ -473,42 +490,70 @@ namespace LightningProfiler
             m_SearchMatchFrames.Clear();
             ProfilerWindow.Repaint();
 
-            // Restore normal buffer size (collect mode was disabled above)
-            ProfilerUserSettings.frameCount = m_DefaultFrameHistoryLength;
-
             Debug.Log($"[LightningProfiler] Saved {tempFiles.Count} marked frame snapshots to: {savePath}");
         }
 
         bool IsFrameMarked(int frame)
         {
-            if (m_ChartFilterThresholdMs > 0f)
+            bool checkSpike = m_ChartFilterThresholdMs > 0f;
+            bool checkGc = m_GcFilterThresholdKB > 0f;
+            bool checkSearch = !string.IsNullOrEmpty(m_SearchString);
+
+            if (!checkSpike && !checkGc && !checkSearch)
+                return false;
+
+            // Get total frame time for spike check (separate lightweight API)
+            float frameTimeMs = 0f;
+            if (checkSpike)
             {
-                float frameTimeMs;
                 using (var iter = new ProfilerFrameDataIterator())
                 {
                     iter.SetRoot(frame, 0);
                     frameTimeMs = iter.frameTimeMS;
                 }
-                if (m_IgnoreEditorLoop)
-                    frameTimeMs -= GetEditorLoopTimeMs(frame);
-                if (frameTimeMs >= m_ChartFilterThresholdMs)
-                    return true;
             }
 
-            if (m_GcFilterThresholdKB > 0f)
+            // Single pass through raw samples for EditorLoop time, GC bytes, and search match
+            float editorLoopMs = 0f;
+            long gcBytes = 0;
+            bool searchMatch = false;
+
+            using (var raw = ProfilerDriver.GetRawFrameDataView(frame, 0))
             {
-                long gcBytes = GetFrameGcAllocBytes(frame, 0, m_IgnoreEditorLoop);
-                if (gcBytes >= (long)(m_GcFilterThresholdKB * 1024f))
-                    return true;
+                if (raw != null && raw.valid)
+                {
+                    bool needEditorLoop = checkSpike && m_IgnoreEditorLoop;
+                    int gcMarkerId = checkGc ? raw.GetMarkerId("GC.Alloc") : FrameDataView.invalidMarkerId;
+                    bool gcValid = gcMarkerId != FrameDataView.invalidMarkerId;
+
+                    for (int i = 0; i < raw.sampleCount; i++)
+                    {
+                        if (needEditorLoop || checkSearch)
+                        {
+                            var name = raw.GetSampleName(i);
+
+                            if (needEditorLoop && name == "EditorLoop")
+                                editorLoopMs += raw.GetSampleTimeMs(i);
+
+                            if (checkSearch && !searchMatch)
+                            {
+                                if (name.IndexOf(m_SearchString, StringComparison.OrdinalIgnoreCase) >= 0)
+                                    searchMatch = true;
+                            }
+                        }
+
+                        if (gcValid && raw.GetSampleMarkerId(i) == gcMarkerId && raw.GetSampleMetadataCount(i) > 0)
+                            gcBytes += raw.GetSampleMetadataAsLong(i, 0);
+                    }
+                }
             }
 
-            if (!string.IsNullOrEmpty(m_SearchString))
-            {
-                int threadIndex = m_FrameDataHierarchyView.threadIndex;
-                if (threadIndex < 0) threadIndex = 0;
-                if (FrameContainsSearchTerm(frame, threadIndex, m_SearchString))
-                    return true;
-            }
+            if (checkSpike && (frameTimeMs - editorLoopMs) >= m_ChartFilterThresholdMs)
+                return true;
+            if (checkGc && gcBytes >= (long)(m_GcFilterThresholdKB * 1024f))
+                return true;
+            if (searchMatch)
+                return true;
 
             return false;
         }
