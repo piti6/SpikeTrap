@@ -387,6 +387,16 @@ namespace LightningProfiler
                 }
             }
 
+            // --- Screenshot toggle ---
+            var newShowSS = GUILayout.Toggle(m_ShowScreenshot,
+                EditorGUIUtility.TrTextContent("SS", "Show screenshot preview for the selected frame."),
+                EditorStyles.toolbarButton);
+            if (newShowSS != m_ShowScreenshot)
+            {
+                m_ShowScreenshot = newShowSS;
+                EditorPrefs.SetBool(k_ShowScreenshotKey, m_ShowScreenshot);
+            }
+
             GUILayout.FlexibleSpace();
 
             // --- Ignore EditorLoop ---
@@ -440,16 +450,6 @@ namespace LightningProfiler
                 }
             }
 
-            // --- Screenshot preview toggle ---
-            var newShowSS = GUILayout.Toggle(m_ShowScreenshot,
-                EditorGUIUtility.TrTextContent("SS", "Show screenshot preview for the selected frame (requires com.utj.screenshot2profiler runtime)."),
-                EditorStyles.toolbarButton);
-            if (newShowSS != m_ShowScreenshot)
-            {
-                m_ShowScreenshot = newShowSS;
-                EditorPrefs.SetBool(k_ShowScreenshotKey, m_ShowScreenshot);
-            }
-
             EditorGUILayout.EndHorizontal();
         }
 
@@ -459,75 +459,76 @@ namespace LightningProfiler
             if (currentFrame < 0)
                 return;
 
-            // Refresh texture when selected frame changes
+            // Try to load screenshot for this frame; if found, update cache
             if (currentFrame != m_ScreenshotFrameIndex)
             {
-                if (m_ScreenshotTexture != null)
-                    UnityEngine.Object.DestroyImmediate(m_ScreenshotTexture);
-                m_ScreenshotTexture = null;
                 m_ScreenshotFrameIndex = currentFrame;
-
-                m_ScreenshotTexture = TryLoadScreenshotTexture((int)currentFrame);
+                var tex = LoadScreenshotFromFrame((int)currentFrame);
+                if (tex != null)
+                {
+                    if (m_ScreenshotTexture != null)
+                        UnityEngine.Object.DestroyImmediate(m_ScreenshotTexture);
+                    m_ScreenshotTexture = tex;
+                }
+                // If no screenshot on this frame, keep showing the cached one
             }
 
             if (m_ScreenshotTexture == null)
                 return;
 
             float aspect = (float)m_ScreenshotTexture.width / m_ScreenshotTexture.height;
-            float displayHeight = Mathf.Min(k_ScreenshotMaxHeight, EditorGUIUtility.currentViewWidth / aspect);
+            float availableWidth = EditorGUIUtility.currentViewWidth;
+            float displayHeight = Mathf.Min(k_ScreenshotMaxHeight, availableWidth / aspect);
             float displayWidth = displayHeight * aspect;
 
-            var rect = GUILayoutUtility.GetRect(displayWidth, displayHeight);
+            // Reserve layout space, then center the image within it
+            var layoutRect = GUILayoutUtility.GetRect(availableWidth, displayHeight);
+            var imageRect = new Rect(
+                layoutRect.x + (layoutRect.width - displayWidth) * 0.5f,
+                layoutRect.y,
+                displayWidth,
+                displayHeight);
+
+            // Background
+            EditorGUI.DrawRect(layoutRect, new Color(0.1f, 0.1f, 0.1f, 1f));
             // Flip Y (screenshots are often upside down depending on graphics API)
-            GUI.DrawTextureWithTexCoords(rect, m_ScreenshotTexture, new Rect(0, 1, 1, -1));
+            GUI.DrawTextureWithTexCoords(imageRect, m_ScreenshotTexture, new Rect(0, 1, 1, -1));
         }
 
-        /// Inline screenshot metadata reader — reads frame metadata emitted by com.utj.screenshot2profiler runtime.
-        Texture2D TryLoadScreenshotTexture(int frameIdx)
+        Texture2D LoadScreenshotFromFrame(int frameIdx)
         {
-            // Read tag info from metadata
-            var hierarchyView = ProfilerDriver.GetHierarchyFrameDataView(frameIdx, 0, HierarchyFrameDataView.ViewModes.Default, 0, false);
-            if (hierarchyView == null || !hierarchyView.valid)
+            var view = ProfilerDriver.GetHierarchyFrameDataView(frameIdx, 0, HierarchyFrameDataView.ViewModes.Default, 0, false);
+            if (view == null || !view.valid)
                 return null;
 
-            var tagBytes = hierarchyView.GetFrameMetaData<byte>(k_SSMetadataGuid, k_SSInfoTag);
+            var tagBytes = view.GetFrameMetaData<byte>(k_SSMetadataGuid, k_SSInfoTag);
             if (!tagBytes.IsCreated || tagBytes.Length < 12)
                 return null;
 
-            // Parse tag info
             int id = tagBytes[0] | (tagBytes[1] << 8) | (tagBytes[2] << 16) | (tagBytes[3] << 24);
             int width = tagBytes[4] | (tagBytes[5] << 8);
             int height = tagBytes[6] | (tagBytes[7] << 8);
-            // Compression type: 0=None(RGBA32), 1=RGB565, 2=PNG, 3=JPG_RGB565, 4=JPG_RGBA
             byte compressByte = tagBytes.Length > 12 ? tagBytes[12] : (byte)0;
             bool isRaw = compressByte <= 1;
             var texFormat = compressByte == 1 || compressByte == 3 ? TextureFormat.RGB565 : TextureFormat.RGBA32;
 
-            // Search for image data in nearby frames (async readback may delay it)
-            for (int i = frameIdx; i < frameIdx + 10; i++)
+            // Tag info and image data are in the same frame (emitted together at readback completion)
+            var imgBytes = view.GetFrameMetaData<byte>(k_SSMetadataGuid, id);
+            if (!imgBytes.IsCreated || imgBytes.Length <= 16)
+                return null;
+
+            var tex = new Texture2D(width, height, texFormat, false);
+            if (isRaw)
             {
-                var view = ProfilerDriver.GetHierarchyFrameDataView(i, 0, HierarchyFrameDataView.ViewModes.Default, 0, false);
-                if (view == null || !view.valid)
-                    continue;
-
-                var imgBytes = view.GetFrameMetaData<byte>(k_SSMetadataGuid, id);
-                if (!imgBytes.IsCreated || imgBytes.Length <= 16)
-                    continue;
-
-                var tex = new Texture2D(width, height, texFormat, false);
-                if (isRaw)
-                {
-                    tex.LoadRawTextureData(imgBytes);
-                    tex.Apply();
-                }
-                else
-                {
-                    tex.LoadImage(imgBytes.ToArray());
-                    tex.Apply();
-                }
-                return tex;
+                tex.LoadRawTextureData(imgBytes);
+                tex.Apply();
             }
-            return null;
+            else
+            {
+                tex.LoadImage(imgBytes.ToArray());
+                tex.Apply();
+            }
+            return tex;
         }
 
         void SaveMergedMarkedFrames()

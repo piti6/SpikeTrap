@@ -6,7 +6,6 @@ using Unity.Collections;
 using UnityEngine.Experimental.Rendering;
 using Unity.Collections.LowLevel.Unsafe;
 
-#if DEBUG
 namespace UTJ.SS2Profiler
 {
 
@@ -108,6 +107,8 @@ namespace UTJ.SS2Profiler
                 }
                 else if (req.request.done)
                 {
+                    // Emit tag info AND image data in the same frame so they're always together
+                    WriteTagMetaData(frames[idx].id);
                     var data = req.request.GetData<byte>();
                     this.EmitCaptureBodyData( frames[idx].compress,frames[idx].id, data,
                         frames[idx].renderTexture);
@@ -155,7 +156,9 @@ namespace UTJ.SS2Profiler
             tex2d.ReadPixels(new Rect(0, 0, rt.width, rt.height), 0, 0);
             tex2d.Apply();
             var bytes =  tex2d.GetRawTextureData<byte>();
-            
+
+            // Emit tag info AND image data in the same frame
+            WriteTagMetaData(frames[idx].id);
             this.EmitCaptureBodyData( frames[idx].compress, frames[idx].id, bytes,
                 frames[idx].renderTexture);
 
@@ -250,7 +253,6 @@ namespace UTJ.SS2Profiler
                 if(captureBehaviour == null) { continue; }
                 frames[i].id = id;
                 frames[i].compress = this.compress;
-                WriteTagMetaData(id);
                 captureBehaviour(frames[i].renderTexture);
                 return i;
             }
@@ -268,5 +270,3 @@ namespace UTJ.SS2Profiler
 
 
 }
-
-#endif

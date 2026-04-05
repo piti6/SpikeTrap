@@ -25,17 +25,13 @@ namespace UTJ.SS2Profiler
         {
             set
             {
-#if DEBUG
                 if (renderTextureBuffer != null)
                     renderTextureBuffer.captureBehaviour = value;
-#endif
             }
         }
 
         /// How many frames to skip between captures. 0 = every frame, 1 = every other frame, etc.
-        public int captureInterval { get; set; } = 0;
-
-#if DEBUG
+        /// Set via Initialize() or directly to change at runtime.
         private const string CAPTURE_CMD_SAMPLE = "ScreenToRt";
 
         private CommandBuffer commandBuffer;
@@ -43,33 +39,22 @@ namespace UTJ.SS2Profiler
         private GameObject behaviourGmo;
         private int frameIdx = 0;
         private int lastRequestIdx = -1;
-        private int framesSinceCapture = 0;
 
         private CustomSampler captureSampler;
         private CustomSampler updateSampler;
 
         private bool isInitialize = false;
-#endif
 
         public bool Initialize()
         {
             if (Screen.width > Screen.height)
-                return Initialize(192, 128, true);
+                return Initialize(192, 128);
             else
-                return Initialize(128, 192, true);
+                return Initialize(128, 192);
         }
 
-        public bool Initialize(int width, int height, bool allowSync = false)
+        public bool Initialize(int width, int height, TextureCompress compress = TextureCompress.RGB_565, bool allowSync = true)
         {
-#if DEBUG
-            Initialize(width, height, TextureCompress.RGB_565, allowSync);
-#endif
-            return true;
-        }
-
-        public bool Initialize(int width, int height, TextureCompress compress, bool allowSync)
-        {
-#if DEBUG
             if (!SystemInfo.supportsAsyncGPUReadback)
             {
                 if (!allowSync)
@@ -79,13 +64,11 @@ namespace UTJ.SS2Profiler
             }
             if (renderTextureBuffer != null) { return false; }
             InitializeLogic(width, height, compress);
-#endif
             return true;
         }
 
         private void InitializeLogic(int width, int height, TextureCompress compress)
         {
-#if DEBUG
             if (isInitialize) return;
             if (width == 0 || height == 0) return;
 
@@ -102,22 +85,18 @@ namespace UTJ.SS2Profiler
             behaviour.captureFunc += this.Capture;
             behaviour.updateFunc += this.Update;
             isInitialize = true;
-#endif
         }
 
         public void Destroy()
         {
-#if DEBUG
             if (behaviourGmo)
                 GameObject.Destroy(behaviourGmo);
             if (renderTextureBuffer != null)
                 renderTextureBuffer.Dispose();
             renderTextureBuffer = null;
             isInitialize = false;
-#endif
         }
 
-#if DEBUG
         private void Update()
         {
             updateSampler.Begin();
@@ -135,26 +114,15 @@ namespace UTJ.SS2Profiler
 
         private void Capture()
         {
-            // Skip frames based on interval
-            if (captureInterval > 0)
-            {
-                framesSinceCapture++;
-                if (framesSinceCapture <= captureInterval)
-                    return;
-                framesSinceCapture = 0;
-            }
-
             captureSampler.Begin();
             lastRequestIdx = renderTextureBuffer.CaptureScreen(frameIdx);
             renderTextureBuffer.UpdateAsyncRequest();
             ++frameIdx;
             captureSampler.End();
         }
-#endif
 
         public void DefaultCaptureBehaviour(RenderTexture target)
         {
-#if DEBUG
             if (commandBuffer == null)
             {
                 commandBuffer = new CommandBuffer();
@@ -169,7 +137,6 @@ namespace UTJ.SS2Profiler
             Graphics.ExecuteCommandBuffer(commandBuffer);
             RenderTexture.ReleaseTemporary(rt);
             commandBuffer.Clear();
-#endif
         }
     }
 }
