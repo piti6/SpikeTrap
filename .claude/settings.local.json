@@ -11,7 +11,15 @@
       "Bash(uloop get-logs:*)",
       "Bash(uloop control-play-mode:*)",
       "Bash(uloop screenshot:*)",
-      "Bash(grep -E \"\\\\.cs$\")"
+      "Bash(grep -E \"\\\\.cs$\")",
+      "Bash(xxd C:/LightningProfiler/.uloop/outputs/test_profile.data)",
+      "Bash(xxd -l 256 C:/LightningProfiler/.uloop/outputs/full_profile.data)",
+      "Bash(grep -n \"^\\\\s*\\\\\\(public\\\\|internal\\\\\\)\\\\s*\\\\\\(sealed\\\\|static\\\\|abstract\\\\\\)?\\\\s*\\\\\\(class\\\\|interface\\\\|struct\\\\|enum\\\\\\)\" \"C:/LightningProfiler/Packages/com.piti6.lightning-profiler/Bridge\"/*.cs)",
+      "Bash(grep:*)",
+      "Bash(find \"C:/LightningProfiler/Packages/com.piti6.lightning-profiler\" -maxdepth 2 -name \"*.cs\" -type f -exec grep -l \"class\\\\|interface\\\\|enum\" {} \\\\;)",
+      "mcp__uLoopMCP__clear-console",
+      "Bash(ls C:/ScreenshotToUnityProfiler/LICENSE*)",
+      "Bash(cat C:/ScreenshotToUnityProfiler/LICENSE*)"
     ]
   },
   "enabledMcpjsonServers": [

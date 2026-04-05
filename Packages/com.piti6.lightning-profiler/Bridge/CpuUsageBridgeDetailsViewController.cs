@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using Unity.Collections;
 using Unity.Profiling.Editor;
 using UnityEditor;
 using UnityEditor.Profiling;
@@ -128,6 +129,17 @@ namespace LightningProfiler
             HierarchyFrameDataView.ViewModes.MergeSamplesWithTheSameName |
             HierarchyFrameDataView.ViewModes.HideEditorOnlySamples;
 
+        // Screenshot preview
+        const string k_ShowScreenshotKey = "LightningProfiler.ShowScreenshot";
+        bool m_ShowScreenshot;
+        Texture2D m_ScreenshotTexture;
+        long m_ScreenshotFrameIndex = -1;
+        const float k_ScreenshotMaxHeight = 150f;
+
+        // Screenshot metadata constants (matches com.utj.screenshot2profiler runtime)
+        static readonly System.Guid k_SSMetadataGuid = new System.Guid("4389DCEB-F9B3-4D49-940B-E98482F3A3F8");
+        const int k_SSInfoTag = -1;
+
 
         public CpuUsageBridgeDetailsViewController(ProfilerWindow profilerWindow)
             : base(profilerWindow)
@@ -162,6 +174,9 @@ namespace LightningProfiler
         {
             if (disposing)
             {
+                if (m_ScreenshotTexture != null)
+                    UnityEngine.Object.DestroyImmediate(m_ScreenshotTexture);
+
                 if (m_PauseCallbackSubscribed)
                 {
                     ProfilerDriver.NewProfilerFrameRecorded -= OnNewProfilerFrame;
@@ -203,6 +218,7 @@ namespace LightningProfiler
             m_PauseOnFilter = EditorPrefs.GetBool(k_PauseOnFilterKey, false);
             m_LogOnFilter = EditorPrefs.GetBool(k_LogOnFilterKey, false);
             m_IgnoreEditorLoop = EditorPrefs.GetBool(k_IgnoreEditorLoopKey, true);
+            m_ShowScreenshot = EditorPrefs.GetBool(k_ShowScreenshotKey, true);
             m_GcFilterThresholdKB = EditorPrefs.GetFloat(k_GcFilterThresholdKey, 0f);
             m_SaveMarkedOnly = EditorPrefs.GetBool(k_SaveMarkedOnlyKey, false);
             if (m_SaveMarkedOnly)
@@ -259,6 +275,10 @@ namespace LightningProfiler
             // Draw combined highlight strips (spike / GC / search)
             if (m_ChartFilterThresholdMs > 0f || m_GcFilterThresholdKB > 0f || !string.IsNullOrEmpty(m_SearchString))
                 DrawCombinedHighlightStrip(rect);
+
+            // Screenshot preview
+            if (m_ShowScreenshot)
+                DrawScreenshotPreview();
 
             var frameData = fetchData ? GetFrameDataViewForHierarchy() : null;
             m_FrameDataHierarchyView.DoGUI(frameData, fetchData, ref m_UpdateViewLive, null);
@@ -420,7 +440,94 @@ namespace LightningProfiler
                 }
             }
 
+            // --- Screenshot preview toggle ---
+            var newShowSS = GUILayout.Toggle(m_ShowScreenshot,
+                EditorGUIUtility.TrTextContent("SS", "Show screenshot preview for the selected frame (requires com.utj.screenshot2profiler runtime)."),
+                EditorStyles.toolbarButton);
+            if (newShowSS != m_ShowScreenshot)
+            {
+                m_ShowScreenshot = newShowSS;
+                EditorPrefs.SetBool(k_ShowScreenshotKey, m_ShowScreenshot);
+            }
+
             EditorGUILayout.EndHorizontal();
+        }
+
+        void DrawScreenshotPreview()
+        {
+            long currentFrame = ProfilerWindow.selectedFrameIndex;
+            if (currentFrame < 0)
+                return;
+
+            // Refresh texture when selected frame changes
+            if (currentFrame != m_ScreenshotFrameIndex)
+            {
+                if (m_ScreenshotTexture != null)
+                    UnityEngine.Object.DestroyImmediate(m_ScreenshotTexture);
+                m_ScreenshotTexture = null;
+                m_ScreenshotFrameIndex = currentFrame;
+
+                m_ScreenshotTexture = TryLoadScreenshotTexture((int)currentFrame);
+            }
+
+            if (m_ScreenshotTexture == null)
+                return;
+
+            float aspect = (float)m_ScreenshotTexture.width / m_ScreenshotTexture.height;
+            float displayHeight = Mathf.Min(k_ScreenshotMaxHeight, EditorGUIUtility.currentViewWidth / aspect);
+            float displayWidth = displayHeight * aspect;
+
+            var rect = GUILayoutUtility.GetRect(displayWidth, displayHeight);
+            // Flip Y (screenshots are often upside down depending on graphics API)
+            GUI.DrawTextureWithTexCoords(rect, m_ScreenshotTexture, new Rect(0, 1, 1, -1));
+        }
+
+        /// Inline screenshot metadata reader — reads frame metadata emitted by com.utj.screenshot2profiler runtime.
+        Texture2D TryLoadScreenshotTexture(int frameIdx)
+        {
+            // Read tag info from metadata
+            var hierarchyView = ProfilerDriver.GetHierarchyFrameDataView(frameIdx, 0, HierarchyFrameDataView.ViewModes.Default, 0, false);
+            if (hierarchyView == null || !hierarchyView.valid)
+                return null;
+
+            var tagBytes = hierarchyView.GetFrameMetaData<byte>(k_SSMetadataGuid, k_SSInfoTag);
+            if (!tagBytes.IsCreated || tagBytes.Length < 12)
+                return null;
+
+            // Parse tag info
+            int id = tagBytes[0] | (tagBytes[1] << 8) | (tagBytes[2] << 16) | (tagBytes[3] << 24);
+            int width = tagBytes[4] | (tagBytes[5] << 8);
+            int height = tagBytes[6] | (tagBytes[7] << 8);
+            // Compression type: 0=None(RGBA32), 1=RGB565, 2=PNG, 3=JPG_RGB565, 4=JPG_RGBA
+            byte compressByte = tagBytes.Length > 12 ? tagBytes[12] : (byte)0;
+            bool isRaw = compressByte <= 1;
+            var texFormat = compressByte == 1 || compressByte == 3 ? TextureFormat.RGB565 : TextureFormat.RGBA32;
+
+            // Search for image data in nearby frames (async readback may delay it)
+            for (int i = frameIdx; i < frameIdx + 10; i++)
+            {
+                var view = ProfilerDriver.GetHierarchyFrameDataView(i, 0, HierarchyFrameDataView.ViewModes.Default, 0, false);
+                if (view == null || !view.valid)
+                    continue;
+
+                var imgBytes = view.GetFrameMetaData<byte>(k_SSMetadataGuid, id);
+                if (!imgBytes.IsCreated || imgBytes.Length <= 16)
+                    continue;
+
+                var tex = new Texture2D(width, height, texFormat, false);
+                if (isRaw)
+                {
+                    tex.LoadRawTextureData(imgBytes);
+                    tex.Apply();
+                }
+                else
+                {
+                    tex.LoadImage(imgBytes.ToArray());
+                    tex.Apply();
+                }
+                return tex;
+            }
+            return null;
         }
 
         void SaveMergedMarkedFrames()
