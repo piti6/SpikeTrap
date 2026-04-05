@@ -104,9 +104,6 @@ namespace LightningProfiler
         bool m_LogOnFilter;
         bool m_PauseCallbackSubscribed;
 
-        // Ignore EditorLoop frames
-        const string k_IgnoreEditorLoopKey = "LightningProfiler.IgnoreEditorLoop";
-        bool m_IgnoreEditorLoop;
 
         // GC filter settings
         const string k_GcFilterThresholdKey = "LightningProfiler.GcFilterThresholdKB";
@@ -139,6 +136,12 @@ namespace LightningProfiler
         // Screenshot metadata constants (matches com.utj.screenshot2profiler runtime)
         static readonly System.Guid k_SSMetadataGuid = new System.Guid("4389DCEB-F9B3-4D49-940B-E98482F3A3F8");
         const int k_SSInfoTag = -1;
+
+        // Session metadata — cached per profiler session
+        static readonly System.Guid k_SessionGuid = new System.Guid("A17B3C4D-E5F6-4789-ABCD-EF0123456789");
+        const int k_SessionInfoTag = -100;
+        bool m_IsEditorSession = true; // assume editor until proven otherwise
+        int m_SessionCheckedFrame = -1;
 
 
         public CpuUsageBridgeDetailsViewController(ProfilerWindow profilerWindow)
@@ -177,6 +180,8 @@ namespace LightningProfiler
                 if (m_ScreenshotTexture != null)
                     UnityEngine.Object.DestroyImmediate(m_ScreenshotTexture);
 
+                ProfilerWindow.recordingStateChanged -= OnRecordingStateChanged;
+
                 if (m_PauseCallbackSubscribed)
                 {
                     ProfilerDriver.NewProfilerFrameRecorded -= OnNewProfilerFrame;
@@ -214,10 +219,12 @@ namespace LightningProfiler
             m_FrameDataHierarchyView.searchChanged += OnSearchChanged;
             m_FrameDataHierarchyView.hideSearchBar = true;
 
+            // Hook profiler recording state to auto-save collected marked frames
+            ProfilerWindow.recordingStateChanged += OnRecordingStateChanged;
+
             m_ChartFilterThresholdMs = EditorPrefs.GetFloat(k_ChartFilterThresholdKey, 0f);
             m_PauseOnFilter = EditorPrefs.GetBool(k_PauseOnFilterKey, false);
             m_LogOnFilter = EditorPrefs.GetBool(k_LogOnFilterKey, false);
-            m_IgnoreEditorLoop = EditorPrefs.GetBool(k_IgnoreEditorLoopKey, true);
             m_ShowScreenshot = EditorPrefs.GetBool(k_ShowScreenshotKey, true);
             m_GcFilterThresholdKB = EditorPrefs.GetFloat(k_GcFilterThresholdKey, 0f);
             m_SaveMarkedOnly = EditorPrefs.GetBool(k_SaveMarkedOnlyKey, false);
@@ -399,54 +406,45 @@ namespace LightningProfiler
 
             GUILayout.FlexibleSpace();
 
-            // --- Ignore EditorLoop ---
-            var newIgnore = GUILayout.Toggle(m_IgnoreEditorLoop,
-                EditorGUIUtility.TrTextContent("Ignore EditorLoop", "Skip EditorLoop frames for spike/GC detection and highlighting."),
-                EditorStyles.toolbarButton);
-            if (newIgnore != m_IgnoreEditorLoop)
+            // --- Collect / Save marked (state-dependent button) ---
+            if (m_SaveMarkedOnly)
             {
-                m_IgnoreEditorLoop = newIgnore;
-                EditorPrefs.SetBool(k_IgnoreEditorLoopKey, m_IgnoreEditorLoop);
-                // Force rescan of highlight strips
-                m_ThresholdCachedLastFrame = -1;
-                m_ThresholdCachedValue = -1f;
-                m_ThresholdHotFrames.Clear();
-                m_GcCachedLastFrame = -1;
-                m_GcCachedThreshold = -1f;
-                m_GcHotFrames.Clear();
-            }
-
-            // --- Save marked only ---
-            var newSaveMarked = GUILayout.Toggle(m_SaveMarkedOnly,
-                EditorGUIUtility.TrTextContent($"Collect marked ({m_MarkedFrameTempFiles.Count})",
-                    "When enabled, each frame matching spike/GC/search is saved to a temp file. Use the Save button to merge them into a single .data file."),
-                EditorStyles.toolbarButton);
-            if (newSaveMarked != m_SaveMarkedOnly)
-            {
-                m_SaveMarkedOnly = newSaveMarked;
-                EditorPrefs.SetBool(k_SaveMarkedOnlyKey, m_SaveMarkedOnly);
-                if (m_SaveMarkedOnly)
-                {
-                    // Persist the original frame count so it survives domain reloads
-                    m_DefaultFrameHistoryLength = ProfilerUserSettings.frameCount;
-                    EditorPrefs.SetInt(k_DefaultFrameHistoryKey, m_DefaultFrameHistoryLength);
-                    ProfilerUserSettings.frameCount = k_SaveMarkedBufferSize;
-                }
-                else
-                {
-                    // Restore normal buffer size
-                    ProfilerUserSettings.frameCount = Mathf.Clamp(m_DefaultFrameHistoryLength, 1, 2000);
-                }
-                UpdatePauseCallbackSubscription();
-            }
-
-            using (new EditorGUI.DisabledScope(m_MarkedFrameTempFiles.Count == 0))
-            {
+                // Collecting — show stop+save button
                 if (GUILayout.Button(
-                    EditorGUIUtility.TrTextContent("Save marked", "Merge all collected marked frames into a single .data file."),
+                    EditorGUIUtility.TrTextContent($"Save ({m_MarkedFrameTempFiles.Count})", "Stop collecting and save marked frames to a .data file."),
                     EditorStyles.toolbarButton))
                 {
                     SaveMergedMarkedFrames();
+                }
+            }
+            else
+            {
+                // Idle — show start button
+                if (GUILayout.Button(
+                    EditorGUIUtility.TrTextContent("Collect", "Start collecting frames matching active filters."),
+                    EditorStyles.toolbarButton))
+                {
+                    m_SaveMarkedOnly = true;
+                    EditorPrefs.SetBool(k_SaveMarkedOnlyKey, true);
+                    m_DefaultFrameHistoryLength = ProfilerUserSettings.frameCount;
+                    EditorPrefs.SetInt(k_DefaultFrameHistoryKey, m_DefaultFrameHistoryLength);
+                    ProfilerUserSettings.frameCount = k_SaveMarkedBufferSize;
+                    UpdatePauseCallbackSubscription();
+                }
+            }
+
+            // --- Clear collected temp files ---
+            if (m_MarkedFrameTempFiles.Count > 0)
+            {
+                if (GUILayout.Button(
+                    EditorGUIUtility.TrTextContent("Clear", "Delete all collected marked frame temp files."),
+                    EditorStyles.toolbarButton))
+                {
+                    foreach (var f in m_MarkedFrameTempFiles)
+                    {
+                        try { if (System.IO.File.Exists(f)) System.IO.File.Delete(f); } catch { }
+                    }
+                    m_MarkedFrameTempFiles.Clear();
                 }
             }
 
@@ -529,6 +527,15 @@ namespace LightningProfiler
                 tex.Apply();
             }
             return tex;
+        }
+
+        void OnRecordingStateChanged(bool recording)
+        {
+            // When recording stops and we have collected marked frames, auto-save
+            if (!recording && m_SaveMarkedOnly && m_MarkedFrameTempFiles.Count > 0)
+            {
+                EditorApplication.delayCall += SaveMergedMarkedFrames;
+            }
         }
 
         void SaveMergedMarkedFrames()
@@ -630,7 +637,7 @@ namespace LightningProfiler
             {
                 if (raw != null && raw.valid)
                 {
-                    bool needEditorLoop = checkSpike && m_IgnoreEditorLoop;
+                    bool needEditorLoop = checkSpike && IsEditorSession();
                     int gcMarkerId = checkGc ? raw.GetMarkerId("GC.Alloc") : FrameDataView.invalidMarkerId;
                     bool gcValid = gcMarkerId != FrameDataView.invalidMarkerId;
 
@@ -664,6 +671,26 @@ namespace LightningProfiler
                 return true;
 
             return false;
+        }
+
+        bool IsEditorSession()
+        {
+            int lastFrame = ProfilerDriver.lastFrameIndex;
+            if (m_SessionCheckedFrame == lastFrame)
+                return m_IsEditorSession;
+
+            // Read session-level metadata (emitted once per session via EmitSessionMetaData)
+            int firstFrame = ProfilerDriver.firstFrameIndex;
+            if (firstFrame < 0) return m_IsEditorSession;
+            var view = ProfilerDriver.GetHierarchyFrameDataView(firstFrame, 0, HierarchyFrameDataView.ViewModes.Default, 0, false);
+            if (view != null && view.valid)
+            {
+                var data = view.GetSessionMetaData<byte>(k_SessionGuid, k_SessionInfoTag);
+                if (data.IsCreated && data.Length >= 1)
+                    m_IsEditorSession = data[0] == 1;
+            }
+            m_SessionCheckedFrame = lastFrame;
+            return m_IsEditorSession;
         }
 
         /// Returns the total EditorLoop time in ms for the given frame (sums all EditorLoop samples).
@@ -749,7 +776,7 @@ namespace LightningProfiler
                     iter.SetRoot(checkFrame, 0);
                     frameTimeMs = iter.frameTimeMS;
                 }
-                if (m_IgnoreEditorLoop)
+                if (IsEditorSession())
                     frameTimeMs -= GetEditorLoopTimeMs(checkFrame);
                 if (frameTimeMs >= m_ChartFilterThresholdMs)
                     isSpike = true;
@@ -759,7 +786,7 @@ namespace LightningProfiler
             bool isGcSpike = false;
             if (m_GcFilterThresholdKB > 0f)
             {
-                long gcBytes = GetFrameGcAllocBytes(checkFrame, 0, m_IgnoreEditorLoop);
+                long gcBytes = GetFrameGcAllocBytes(checkFrame, 0, IsEditorSession());
                 if (gcBytes >= (long)(m_GcFilterThresholdKB * 1024f))
                     isGcSpike = true;
             }
@@ -910,7 +937,7 @@ namespace LightningProfiler
                 iter.SetRoot(frame, 0);
                 frameTimeMs = iter.frameTimeMS;
             }
-            if (m_IgnoreEditorLoop)
+            if (IsEditorSession())
                 frameTimeMs -= GetEditorLoopTimeMs(frame);
             if (frameTimeMs >= m_ChartFilterThresholdMs)
                 m_ThresholdHotFrames.Add(frame);
@@ -1072,7 +1099,7 @@ namespace LightningProfiler
 
         void CheckAndAddGcFrame(int frame)
         {
-            long gcBytes = GetFrameGcAllocBytes(frame, 0, m_IgnoreEditorLoop);
+            long gcBytes = GetFrameGcAllocBytes(frame, 0, IsEditorSession());
             if (gcBytes >= (long)(m_GcFilterThresholdKB * 1024f))
                 m_GcHotFrames.Add(frame);
         }

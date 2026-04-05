@@ -99,6 +99,7 @@ namespace UTJ.SS2Profiler
 
         private void Update()
         {
+            LightningProfiler.Runtime.LightningProfilerSession.EmitSessionInfoIfNeeded();
             updateSampler.Begin();
             if (SystemInfo.supportsAsyncGPUReadback)
             {
