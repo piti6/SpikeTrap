@@ -122,6 +122,9 @@ namespace LightningProfiler
         readonly List<string> m_MarkedFrameTempFiles = new List<string>();
         int m_DefaultFrameHistoryLength;
         const int k_SaveMarkedBufferSize = 1;
+        VisualElement m_ChartOverlay;
+        Label m_ChartOverlayLabel;
+        IMGUIContainer m_IMGUIView;
         private static readonly HierarchyFrameDataView.ViewModes _viewMode =
             HierarchyFrameDataView.ViewModes.MergeSamplesWithTheSameName |
             HierarchyFrameDataView.ViewModes.HideEditorOnlySamples;
@@ -161,16 +164,51 @@ namespace LightningProfiler
 
             var imgui = new IMGUIContainer(DrawDetailsViewViaLegacyIMGUIMethods);
             imgui.style.flexGrow = 1f;
+            m_IMGUIView = imgui;
 
-            // Create chart overlay for threshold greyout — sits on top of the chart area.
-            imgui.RegisterCallback<AttachToPanelEvent>(_ => AttachChartOverlay());
+            // Create chart overlay for collecting state — sits on top of the chart area.
+            // Defer to next frame so EditorStyles and the full visual tree are ready.
+            imgui.RegisterCallback<AttachToPanelEvent>(_ => EditorApplication.delayCall += AttachChartOverlay);
 
             return imgui;
         }
 
         void AttachChartOverlay()
         {
-            // Chart overlay removed — using the threshold strip below the chart instead.
+            // The profiler's toolbar and chart are inside a single IMGUIContainer
+            // named "toolbar-and-charts__legacy-imgui-container". We overlay it but
+            // offset the top so the profiler toolbar (Record, Play mode, etc.) stays accessible.
+            if (m_IMGUIView == null) return;
+
+            var root = m_IMGUIView.panel?.visualTree;
+            if (root == null) return;
+
+            var chartContainer = root.Q<IMGUIContainer>("toolbar-and-charts__legacy-imgui-container");
+            if (chartContainer == null) return;
+
+            m_ChartOverlay = new VisualElement();
+            m_ChartOverlay.style.position = Position.Absolute;
+            m_ChartOverlay.style.left = 0;
+            m_ChartOverlay.style.right = 0;
+            m_ChartOverlay.style.bottom = 0;
+            m_ChartOverlay.style.backgroundColor = new Color(0.15f, 0.15f, 0.15f, 0.85f);
+            m_ChartOverlay.style.alignItems = Align.Center;
+            m_ChartOverlay.style.justifyContent = Justify.Center;
+            m_ChartOverlay.pickingMode = PickingMode.Ignore;
+
+            m_ChartOverlayLabel = new Label("Collecting...");
+            m_ChartOverlayLabel.style.fontSize = 16;
+            m_ChartOverlayLabel.style.color = new Color(1f, 1f, 1f, 0.6f);
+            m_ChartOverlayLabel.style.unityFontStyleAndWeight = FontStyle.Bold;
+            m_ChartOverlayLabel.pickingMode = PickingMode.Ignore;
+            m_ChartOverlay.Add(m_ChartOverlayLabel);
+
+            // Offset top to skip the profiler toolbar
+            float toolbarHeight = EditorStyles.toolbar != null ? EditorStyles.toolbar.fixedHeight : 21f;
+            m_ChartOverlay.style.top = toolbarHeight;
+
+            m_ChartOverlay.visible = m_SaveMarkedOnly;
+            chartContainer.Add(m_ChartOverlay);
         }
 
         protected override void Dispose(bool disposing)
@@ -271,6 +309,16 @@ namespace LightningProfiler
             // Draw combined filter controls (spike + GC) in one toolbar
             DrawFilterControls();
 
+            // Sync chart overlay visibility with collect state
+            UpdateChartOverlay();
+
+            // While collecting marked frames, show overlay instead of normal content
+            if (m_SaveMarkedOnly)
+            {
+                DrawCollectingOverlay();
+                return;
+            }
+
             // Update match data
             if (m_ChartFilterThresholdMs > 0f)
                 UpdateThresholdFrameMatches();
@@ -289,6 +337,41 @@ namespace LightningProfiler
 
             var frameData = fetchData ? GetFrameDataViewForHierarchy() : null;
             m_FrameDataHierarchyView.DoGUI(frameData, fetchData, ref m_UpdateViewLive, null);
+        }
+
+        void UpdateChartOverlay()
+        {
+            if (m_ChartOverlay == null) return;
+            m_ChartOverlay.visible = m_SaveMarkedOnly;
+            if (m_SaveMarkedOnly && m_ChartOverlayLabel != null)
+            {
+                int count = m_MarkedFrameTempFiles.Count;
+                m_ChartOverlayLabel.text = count > 0
+                    ? $"Collecting...  ({count} frames captured)"
+                    : "Collecting...";
+            }
+        }
+
+        void DrawCollectingOverlay()
+        {
+            var overlayRect = GUILayoutUtility.GetRect(0f, 0f, GUILayout.ExpandWidth(true), GUILayout.ExpandHeight(true));
+            EditorGUI.DrawRect(overlayRect, new Color(0.15f, 0.15f, 0.15f, 0.85f));
+
+            var style = new GUIStyle(EditorStyles.boldLabel)
+            {
+                alignment = TextAnchor.MiddleCenter,
+                fontSize = 18,
+                normal = { textColor = new Color(1f, 1f, 1f, 0.6f) }
+            };
+
+            int count = m_MarkedFrameTempFiles.Count;
+            string text = count > 0
+                ? $"Collecting...  ({count} frames captured)"
+                : "Collecting...";
+            GUI.Label(overlayRect, text, style);
+
+            // Force continuous repaint so the count stays up-to-date
+            ProfilerWindow.Repaint();
         }
 
         HierarchyFrameDataView GetFrameDataViewForHierarchy()
@@ -409,10 +492,12 @@ namespace LightningProfiler
             // --- Collect / Save marked (state-dependent button) ---
             if (m_SaveMarkedOnly)
             {
-                // Collecting — show stop+save button
-                if (GUILayout.Button(
-                    EditorGUIUtility.TrTextContent($"Save ({m_MarkedFrameTempFiles.Count})", "Stop collecting and save marked frames to a .data file."),
-                    EditorStyles.toolbarButton))
+                // Collecting — show stop+save or just stop depending on collected count
+                int collected = m_MarkedFrameTempFiles.Count;
+                var label = collected > 0
+                    ? EditorGUIUtility.TrTextContent($"Save ({collected})", "Stop collecting and save marked frames to a .data file.")
+                    : EditorGUIUtility.TrTextContent("Stop", "Stop collecting marked frames.");
+                if (GUILayout.Button(label, EditorStyles.toolbarButton))
                 {
                     SaveMergedMarkedFrames();
                 }
@@ -540,12 +625,8 @@ namespace LightningProfiler
 
         void SaveMergedMarkedFrames()
         {
-            // Stop profiler recording via the ProfilerWindow (ProfilerDriver.enabled gets re-enabled by the window)
-            ProfilerWindow.SetRecordingEnabled(false);
-            if (EditorApplication.isPlaying && !EditorApplication.isPaused)
-                EditorApplication.isPaused = true;
-
-            // Disable collect mode so the callback stops saving temp files during merge
+            // Disable collect mode FIRST to prevent OnRecordingStateChanged from
+            // re-queuing this method when SetRecordingEnabled triggers the callback.
             m_SaveMarkedOnly = false;
             EditorPrefs.SetBool(k_SaveMarkedOnlyKey, false);
             if (m_PauseCallbackSubscribed)
@@ -554,9 +635,24 @@ namespace LightningProfiler
                 m_PauseCallbackSubscribed = false;
             }
 
+            // Stop profiler recording via the ProfilerWindow (ProfilerDriver.enabled gets re-enabled by the window)
+            ProfilerWindow.SetRecordingEnabled(false);
+            if (EditorApplication.isPlaying && !EditorApplication.isPaused)
+                EditorApplication.isPaused = true;
+
+            // Nothing collected — just exit collect mode, no save dialog
+            if (m_MarkedFrameTempFiles.Count == 0)
+            {
+                ProfilerUserSettings.frameCount = m_DefaultFrameHistoryLength;
+                return;
+            }
+
             var savePath = EditorUtility.SaveFilePanel("Save Marked Frames", "", "marked_profile", "data");
             if (string.IsNullOrEmpty(savePath))
+            {
+                ProfilerUserSettings.frameCount = m_DefaultFrameHistoryLength;
                 return;
+            }
 
             // Remember current state
             var tempFiles = new List<string>(m_MarkedFrameTempFiles);
