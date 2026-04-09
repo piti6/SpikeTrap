@@ -440,7 +440,8 @@ namespace LightningProfiler
 
         void DrawSearchBar()
         {
-            var rect = GUILayoutUtility.GetRect(50f, 300f, EditorGUI.kSingleLineHeight, EditorGUI.kSingleLineHeight, EditorStyles.toolbarSearchField);
+            float w = Chart.kSideWidth - 34f;
+            var rect = GUILayoutUtility.GetRect(w, w, EditorGUI.kSingleLineHeight, EditorGUI.kSingleLineHeight, EditorStyles.toolbarSearchField);
             treeView.searchString = m_SearchField.OnToolbarGUI(rect, treeView.searchString);
         }
 

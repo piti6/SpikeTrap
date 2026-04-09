@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Profiling;
 
 public class NewBehaviourScript : MonoBehaviour
 {
@@ -59,20 +60,42 @@ public class NewBehaviourScript : MonoBehaviour
         // Random CPU spike
         if (Random.value < spikeChance)
         {
+            Profiler.BeginSample("HeavyComputation");
             float dummy = 0f;
             for (int i = 0; i < spikeIterations; i++)
                 dummy += Mathf.Sqrt(i * 0.001f);
             // Prevent optimization
             if (dummy < -1f) Debug.Log(dummy);
+            Profiler.EndSample();
         }
 
         // Random GC pressure
         if (Random.value < gcChance)
         {
+            Profiler.BeginSample("GarbageBlast");
             gcJunk.Add(new byte[gcAllocKB * 1024]);
             // Keep list from growing forever
             if (gcJunk.Count > 20)
                 gcJunk.RemoveAt(0);
+            Profiler.EndSample();
+        }
+
+        // Random search-word samples for demonstrating search filter
+        if (Random.value < 0.1f)
+        {
+            Profiler.BeginSample("NetworkSync");
+            float d = 0f;
+            for (int i = 0; i < 50000; i++) d += Mathf.Sin(i);
+            if (d < -1f) Debug.Log(d);
+            Profiler.EndSample();
+        }
+
+        if (Random.value < 0.06f)
+        {
+            Profiler.BeginSample("SaveCheckpoint");
+            var tmp = new byte[32 * 1024];
+            for (int i = 0; i < tmp.Length; i++) tmp[i] = (byte)(i & 0xFF);
+            Profiler.EndSample();
         }
     }
 }

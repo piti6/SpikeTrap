@@ -71,31 +71,34 @@ namespace LightningProfiler
     public sealed class CpuUsageBridgeDetailsViewController : ProfilerModuleViewController
     {
         const string k_SettingsKeyPrefix = "Profiler.CPUProfilerModule.";
-        const string k_ChartFilterThresholdKey = "LightningProfiler.ChartFilterThresholdMs";
 
         readonly UnityProfilerWindowControllerAdapter m_ProfilerWindowController;
 
         ProfilerFrameDataHierarchyView m_FrameDataHierarchyView;
         bool m_UpdateViewLive;
         bool m_Initialized;
-        float m_ChartFilterThresholdMs;
         readonly StringBuilder m_SpikeLogBuilder = new StringBuilder(4096);
         double m_LastSpikeLogTime;
         const double k_SpikeLogCooldownSeconds = 1.0;
         const int k_MaxLogSamples = 500;
 
-        // Search frame highlight state
-        string m_SearchString;
-        readonly HashSet<int> m_SearchMatchFrames = new HashSet<int>();
-        string m_SearchMatchCachedQuery;
-        int m_SearchMatchCachedLastFrame = -1;
-        const float k_SearchStripHeight = 10f;
+        // --- Pluggable filter system ---
+        readonly List<IFrameFilter> m_Filters = new List<IFrameFilter>();
+        SpikeFrameFilter m_SpikeFilter;
+        SearchFrameFilter m_SearchFilter;
+        const float k_StripHeight = 20f;
 
-        // Threshold frame highlight state
-        readonly HashSet<int> m_ThresholdHotFrames = new HashSet<int>();
-        float m_ThresholdCachedValue;
-        int m_ThresholdCachedLastFrame = -1;
-        const float k_ThresholdStripHeight = 12f;
+        static readonly List<Func<IFrameFilter>> s_CustomFilterFactories = new List<Func<IFrameFilter>>();
+
+        /// <summary>
+        /// Register a factory that creates a custom <see cref="IFrameFilter"/>.
+        /// Call from an <c>[InitializeOnLoad]</c> static constructor.
+        /// </summary>
+        public static void RegisterCustomFilterFactory(Func<IFrameFilter> factory)
+        {
+            if (factory == null) throw new ArgumentNullException(nameof(factory));
+            s_CustomFilterFactories.Add(factory);
+        }
 
         // Unified pause/log on any filter match
         const string k_PauseOnFilterKey = "LightningProfiler.PauseOnFilter";
@@ -103,17 +106,6 @@ namespace LightningProfiler
         bool m_PauseOnFilter;
         bool m_LogOnFilter;
         bool m_PauseCallbackSubscribed;
-
-
-        // GC filter settings
-        const string k_GcFilterThresholdKey = "LightningProfiler.GcFilterThresholdKB";
-        float m_GcFilterThresholdKB;
-
-        // GC frame highlight state
-        readonly HashSet<int> m_GcHotFrames = new HashSet<int>();
-        float m_GcCachedThreshold;
-        int m_GcCachedLastFrame = -1;
-        const float k_GcStripHeight = 12f;
 
         // Save-only-marked-frames
         const string k_SaveMarkedOnlyKey = "LightningProfiler.SaveMarkedOnly";
@@ -130,8 +122,6 @@ namespace LightningProfiler
             HierarchyFrameDataView.ViewModes.HideEditorOnlySamples;
 
         // Screenshot preview
-        const string k_ShowScreenshotKey = "LightningProfiler.ShowScreenshot";
-        bool m_ShowScreenshot;
         Texture2D m_ScreenshotTexture;
         long m_ScreenshotFrameIndex = -1;
         const float k_ScreenshotMaxHeight = 150f;
@@ -143,7 +133,7 @@ namespace LightningProfiler
         // Session metadata — cached per profiler session
         static readonly System.Guid k_SessionGuid = new System.Guid("A17B3C4D-E5F6-4789-ABCD-EF0123456789");
         const int k_SessionInfoTag = -100;
-        bool m_IsEditorSession = true; // assume editor until proven otherwise
+        bool m_IsEditorSession = true;
         int m_SessionCheckedFrame = -1;
 
 
@@ -175,9 +165,6 @@ namespace LightningProfiler
 
         void AttachChartOverlay()
         {
-            // The profiler's toolbar and chart are inside a single IMGUIContainer
-            // named "toolbar-and-charts__legacy-imgui-container". We overlay it but
-            // offset the top so the profiler toolbar (Record, Play mode, etc.) stays accessible.
             if (m_IMGUIView == null) return;
 
             var root = m_IMGUIView.panel?.visualTree;
@@ -203,7 +190,6 @@ namespace LightningProfiler
             m_ChartOverlayLabel.pickingMode = PickingMode.Ignore;
             m_ChartOverlay.Add(m_ChartOverlayLabel);
 
-            // Offset top to skip the profiler toolbar
             float toolbarHeight = EditorStyles.toolbar != null ? EditorStyles.toolbar.fixedHeight : 21f;
             m_ChartOverlay.style.top = toolbarHeight;
 
@@ -226,12 +212,15 @@ namespace LightningProfiler
                     m_PauseCallbackSubscribed = false;
                 }
 
-                // Clean up any unsaved marked frame temp files
                 foreach (var f in m_MarkedFrameTempFiles)
                 {
                     try { if (System.IO.File.Exists(f)) System.IO.File.Delete(f); } catch { }
                 }
                 m_MarkedFrameTempFiles.Clear();
+
+                foreach (var filter in m_Filters)
+                    filter.Dispose();
+                m_Filters.Clear();
 
                 if (m_FrameDataHierarchyView != null)
                 {
@@ -257,27 +246,49 @@ namespace LightningProfiler
             m_FrameDataHierarchyView.searchChanged += OnSearchChanged;
             m_FrameDataHierarchyView.hideSearchBar = true;
 
-            // Hook profiler recording state to auto-save collected marked frames
             ProfilerWindow.recordingStateChanged += OnRecordingStateChanged;
 
-            m_ChartFilterThresholdMs = EditorPrefs.GetFloat(k_ChartFilterThresholdKey, 0f);
+            // --- Create built-in filters ---
+            m_SpikeFilter = new SpikeFrameFilter(
+                () => IsEditorSession(),
+                threshold =>
+                {
+                    var module = ProfilerWindow.selectedModule as FilterableProfilerModule;
+                    if (module != null)
+                        module.SetChartFilterThreshold(threshold);
+                });
+
+            var gcFilter = new GcFrameFilter(() => IsEditorSession());
+
+            m_SearchFilter = new SearchFrameFilter(
+                () => m_FrameDataHierarchyView.threadIndex,
+                () => m_FrameDataHierarchyView.DrawSearchBarExternal());
+
+            m_Filters.Add(m_SpikeFilter);
+            m_Filters.Add(gcFilter);
+            m_Filters.Add(m_SearchFilter);
+
+            // --- Custom user filters ---
+            foreach (var factory in s_CustomFilterFactories)
+            {
+                var filter = factory();
+                if (filter != null)
+                    m_Filters.Add(filter);
+            }
+
             m_PauseOnFilter = EditorPrefs.GetBool(k_PauseOnFilterKey, false);
             m_LogOnFilter = EditorPrefs.GetBool(k_LogOnFilterKey, false);
-            m_ShowScreenshot = EditorPrefs.GetBool(k_ShowScreenshotKey, true);
-            m_GcFilterThresholdKB = EditorPrefs.GetFloat(k_GcFilterThresholdKey, 0f);
             m_SaveMarkedOnly = EditorPrefs.GetBool(k_SaveMarkedOnlyKey, false);
             if (m_SaveMarkedOnly)
             {
-                // Restore the original frame count from before collect mode was enabled
                 m_DefaultFrameHistoryLength = Mathf.Clamp(EditorPrefs.GetInt(k_DefaultFrameHistoryKey, ProfilerUserSettings.frameCount), 1, 2000);
-                // Re-apply the shrink (domain reload may have reset it)
                 ProfilerUserSettings.frameCount = k_SaveMarkedBufferSize;
             }
             else
             {
                 m_DefaultFrameHistoryLength = ProfilerUserSettings.frameCount;
             }
-            // Recover temp files from previous session (list doesn't survive domain reload)
+
             string tempDir = System.IO.Path.Combine(Application.temporaryCachePath, "MarkedFrames");
             if (System.IO.Directory.Exists(tempDir))
             {
@@ -306,34 +317,24 @@ namespace LightningProfiler
         {
             var fetchData = !m_ProfilerWindowController.ProfilerWindowOverheadIsAffectingProfilingRecordingData() || m_UpdateViewLive;
 
-            // Draw combined filter controls (spike + GC) in one toolbar
             DrawFilterControls();
 
-            // Sync chart overlay visibility with collect state
             UpdateChartOverlay();
 
-            // While collecting marked frames, show overlay instead of normal content
             if (m_SaveMarkedOnly)
             {
                 DrawCollectingOverlay();
                 return;
             }
 
-            // Update match data
-            if (m_ChartFilterThresholdMs > 0f)
-                UpdateThresholdFrameMatches();
-            if (m_GcFilterThresholdKB > 0f)
-                UpdateGcFrameMatches();
-            if (!string.IsNullOrEmpty(m_SearchString))
-                UpdateSearchFrameMatches();
+            // Update and draw filter strips
+            foreach (var filter in m_Filters)
+                filter.UpdateMatches();
 
-            // Draw combined highlight strips (spike / GC / search)
-            if (m_ChartFilterThresholdMs > 0f || m_GcFilterThresholdKB > 0f || !string.IsNullOrEmpty(m_SearchString))
-                DrawCombinedHighlightStrip(rect);
+            DrawCombinedHighlightStrip(rect);
 
             // Screenshot preview
-            if (m_ShowScreenshot)
-                DrawScreenshotPreview();
+            DrawScreenshotPreview();
 
             var frameData = fetchData ? GetFrameDataViewForHierarchy() : null;
             m_FrameDataHierarchyView.DoGUI(frameData, fetchData, ref m_UpdateViewLive, null);
@@ -370,7 +371,6 @@ namespace LightningProfiler
                 : "Collecting...";
             GUI.Label(overlayRect, text, style);
 
-            // Force continuous repaint so the count stays up-to-date
             ProfilerWindow.Repaint();
         }
 
@@ -414,46 +414,16 @@ namespace LightningProfiler
             ProfilerWindow.Repaint();
         }
 
+        // ─── Toolbar ────────────────────────────────────────────────────────
+
         void DrawFilterControls()
         {
             EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
 
-            // --- Filters ---
-            GUILayout.Label("Spike", EditorStyles.miniLabel, GUILayout.Width(34));
-            var newThreshold = EditorGUILayout.FloatField(m_ChartFilterThresholdMs, EditorStyles.toolbarTextField, GUILayout.Width(50));
-            GUILayout.Label("ms", EditorStyles.miniLabel, GUILayout.Width(18));
-
-            if (newThreshold != m_ChartFilterThresholdMs)
-            {
-                m_ChartFilterThresholdMs = Mathf.Max(0f, newThreshold);
-                EditorPrefs.SetFloat(k_ChartFilterThresholdKey, m_ChartFilterThresholdMs);
-
-                var module = ProfilerWindow.selectedModule as FilterableProfilerModule;
-                if (module != null)
-                    module.SetChartFilterThreshold(m_ChartFilterThresholdMs);
-
-                UpdatePauseCallbackSubscription();
-            }
-
-            GUILayout.Label("GC", EditorStyles.miniLabel, GUILayout.Width(18));
-            var newGcThreshold = EditorGUILayout.FloatField(m_GcFilterThresholdKB, EditorStyles.toolbarTextField, GUILayout.Width(50));
-            GUILayout.Label("KB", EditorStyles.miniLabel, GUILayout.Width(18));
-
-            if (newGcThreshold != m_GcFilterThresholdKB)
-            {
-                m_GcFilterThresholdKB = Mathf.Max(0f, newGcThreshold);
-                EditorPrefs.SetFloat(k_GcFilterThresholdKey, m_GcFilterThresholdKB);
-                UpdatePauseCallbackSubscription();
-            }
-
-            m_FrameDataHierarchyView.DrawSearchBarExternal();
-
-            GUILayout.Space(4);
-
             // --- Unified Pause / Log ---
             {
-                bool anyFilter = m_ChartFilterThresholdMs > 0f || m_GcFilterThresholdKB > 0f || !string.IsNullOrEmpty(m_SearchString);
-                using (new EditorGUI.DisabledScope(!anyFilter))
+                bool anyActive = AnyFilterActive();
+                using (new EditorGUI.DisabledScope(!anyActive))
                 {
                     var newPause = GUILayout.Toggle(m_PauseOnFilter,
                         EditorGUIUtility.TrTextContent("Pause", "Pause play mode when any active filter matches a frame."),
@@ -477,22 +447,11 @@ namespace LightningProfiler
                 }
             }
 
-            // --- Screenshot toggle ---
-            var newShowSS = GUILayout.Toggle(m_ShowScreenshot,
-                EditorGUIUtility.TrTextContent("SS", "Show screenshot preview for the selected frame."),
-                EditorStyles.toolbarButton);
-            if (newShowSS != m_ShowScreenshot)
-            {
-                m_ShowScreenshot = newShowSS;
-                EditorPrefs.SetBool(k_ShowScreenshotKey, m_ShowScreenshot);
-            }
-
             GUILayout.FlexibleSpace();
 
             // --- Collect / Save marked (state-dependent button) ---
             if (m_SaveMarkedOnly)
             {
-                // Collecting — show stop+save or just stop depending on collected count
                 int collected = m_MarkedFrameTempFiles.Count;
                 var label = collected > 0
                     ? EditorGUIUtility.TrTextContent($"Save ({collected})", "Stop collecting and save marked frames to a .data file.")
@@ -504,7 +463,6 @@ namespace LightningProfiler
             }
             else
             {
-                // Idle — show start button
                 if (GUILayout.Button(
                     EditorGUIUtility.TrTextContent("Collect", "Start collecting frames matching active filters."),
                     EditorStyles.toolbarButton))
@@ -536,13 +494,14 @@ namespace LightningProfiler
             EditorGUILayout.EndHorizontal();
         }
 
+        // ─── Screenshot ─────────────────────────────────────────────────────
+
         void DrawScreenshotPreview()
         {
             long currentFrame = ProfilerWindow.selectedFrameIndex;
             if (currentFrame < 0)
                 return;
 
-            // Try to load screenshot for this frame; if found, update cache
             if (currentFrame != m_ScreenshotFrameIndex)
             {
                 m_ScreenshotFrameIndex = currentFrame;
@@ -553,7 +512,6 @@ namespace LightningProfiler
                         UnityEngine.Object.DestroyImmediate(m_ScreenshotTexture);
                     m_ScreenshotTexture = tex;
                 }
-                // If no screenshot on this frame, keep showing the cached one
             }
 
             if (m_ScreenshotTexture == null)
@@ -564,7 +522,6 @@ namespace LightningProfiler
             float displayHeight = Mathf.Min(k_ScreenshotMaxHeight, availableWidth / aspect);
             float displayWidth = displayHeight * aspect;
 
-            // Reserve layout space, then center the image within it
             var layoutRect = GUILayoutUtility.GetRect(availableWidth, displayHeight);
             var imageRect = new Rect(
                 layoutRect.x + (layoutRect.width - displayWidth) * 0.5f,
@@ -572,9 +529,7 @@ namespace LightningProfiler
                 displayWidth,
                 displayHeight);
 
-            // Background
             EditorGUI.DrawRect(layoutRect, new Color(0.1f, 0.1f, 0.1f, 1f));
-            // Flip Y (screenshots are often upside down depending on graphics API)
             GUI.DrawTextureWithTexCoords(imageRect, m_ScreenshotTexture, new Rect(0, 1, 1, -1));
         }
 
@@ -595,7 +550,6 @@ namespace LightningProfiler
             bool isRaw = compressByte <= 1;
             var texFormat = compressByte == 1 || compressByte == 3 ? TextureFormat.RGB565 : TextureFormat.RGBA32;
 
-            // Tag info and image data are in the same frame (emitted together at readback completion)
             var imgBytes = view.GetFrameMetaData<byte>(k_SSMetadataGuid, id);
             if (!imgBytes.IsCreated || imgBytes.Length <= 16)
                 return null;
@@ -614,9 +568,10 @@ namespace LightningProfiler
             return tex;
         }
 
+        // ─── Recording / Collect ────────────────────────────────────────────
+
         void OnRecordingStateChanged(bool recording)
         {
-            // When recording stops and we have collected marked frames, auto-save
             if (!recording && m_SaveMarkedOnly && m_MarkedFrameTempFiles.Count > 0)
             {
                 EditorApplication.delayCall += SaveMergedMarkedFrames;
@@ -625,8 +580,6 @@ namespace LightningProfiler
 
         void SaveMergedMarkedFrames()
         {
-            // Disable collect mode FIRST to prevent OnRecordingStateChanged from
-            // re-queuing this method when SetRecordingEnabled triggers the callback.
             m_SaveMarkedOnly = false;
             EditorPrefs.SetBool(k_SaveMarkedOnlyKey, false);
             if (m_PauseCallbackSubscribed)
@@ -635,12 +588,10 @@ namespace LightningProfiler
                 m_PauseCallbackSubscribed = false;
             }
 
-            // Stop profiler recording via the ProfilerWindow (ProfilerDriver.enabled gets re-enabled by the window)
             ProfilerWindow.SetRecordingEnabled(false);
             if (EditorApplication.isPlaying && !EditorApplication.isPaused)
                 EditorApplication.isPaused = true;
 
-            // Nothing collected — just exit collect mode, no save dialog
             if (m_MarkedFrameTempFiles.Count == 0)
             {
                 ProfilerUserSettings.frameCount = m_DefaultFrameHistoryLength;
@@ -654,14 +605,11 @@ namespace LightningProfiler
                 return;
             }
 
-            // Remember current state
             var tempFiles = new List<string>(m_MarkedFrameTempFiles);
 
-            // Set buffer to max allowed (2000) to fit as many merged frames as possible
             ProfilerUserSettings.frameCount = 2000;
             ProfilerDriver.ClearAllFrames();
 
-            // Load each temp file, appending frames
             bool first = true;
             foreach (var tempFile in tempFiles)
             {
@@ -671,101 +619,74 @@ namespace LightningProfiler
                 first = false;
             }
 
-            // Save merged result
             ProfilerDriver.SaveProfile(savePath);
 
-            // Cleanup temp files
             foreach (var tempFile in tempFiles)
             {
                 try { System.IO.File.Delete(tempFile); } catch { }
             }
             m_MarkedFrameTempFiles.Clear();
 
-            // Reload merged file with max buffer
             ProfilerUserSettings.frameCount = 2000;
             ProfilerDriver.LoadProfile(savePath, false);
 
-            // Fit frame count to actual loaded range (capped at 2000)
             int loadedCount = ProfilerDriver.lastFrameIndex - ProfilerDriver.firstFrameIndex + 1;
             ProfilerUserSettings.frameCount = Mathf.Clamp(Mathf.Max(m_DefaultFrameHistoryLength, loadedCount + 10), 1, 2000);
 
-            // Invalidate highlight caches so strips re-evaluate the loaded frames
-            m_ThresholdCachedLastFrame = -1;
-            m_ThresholdCachedValue = -1f;
-            m_ThresholdHotFrames.Clear();
-            m_GcCachedLastFrame = -1;
-            m_GcCachedThreshold = -1f;
-            m_GcHotFrames.Clear();
-            m_SearchMatchCachedLastFrame = -1;
-            m_SearchMatchCachedQuery = null;
-            m_SearchMatchFrames.Clear();
+            // Invalidate all filter caches
+            foreach (var filter in m_Filters)
+                filter.InvalidateCache();
             ProfilerWindow.Repaint();
 
             Debug.Log($"[LightningProfiler] Saved {tempFiles.Count} marked frame snapshots to: {savePath}");
         }
 
-        bool IsFrameMarked(int frame)
+        // ─── Filter evaluation ──────────────────────────────────────────────
+
+        bool AnyFilterActive()
         {
-            bool checkSpike = m_ChartFilterThresholdMs > 0f;
-            bool checkGc = m_GcFilterThresholdKB > 0f;
-            bool checkSearch = !string.IsNullOrEmpty(m_SearchString);
+            foreach (var f in m_Filters)
+                if (f.IsActive) return true;
+            return false;
+        }
 
-            if (!checkSpike && !checkGc && !checkSearch)
-                return false;
-
-            // Get total frame time for spike check (separate lightweight API)
-            float frameTimeMs = 0f;
-            if (checkSpike)
+        FrameDataContext BuildFrameDataContext(int frame, RawFrameDataView raw)
+        {
+            float frameTimeMs;
+            using (var iter = new ProfilerFrameDataIterator())
             {
-                using (var iter = new ProfilerFrameDataIterator())
+                iter.SetRoot(frame, 0);
+                frameTimeMs = iter.frameTimeMS;
+            }
+
+            bool isEditor = IsEditorSession();
+            float editorLoopMs = 0f;
+            if (isEditor && raw != null && raw.valid)
+            {
+                for (int i = 0; i < raw.sampleCount; i++)
                 {
-                    iter.SetRoot(frame, 0);
-                    frameTimeMs = iter.frameTimeMS;
+                    if (raw.GetSampleName(i) == "EditorLoop")
+                        editorLoopMs += raw.GetSampleTimeMs(i);
                 }
             }
 
-            // Single pass through raw samples for EditorLoop time, GC bytes, and search match
-            float editorLoopMs = 0f;
-            long gcBytes = 0;
-            bool searchMatch = false;
+            return new FrameDataContext(frame, frameTimeMs, isEditor, raw, editorLoopMs);
+        }
+
+        bool IsFrameMarked(int frame)
+        {
+            if (!AnyFilterActive())
+                return false;
 
             using (var raw = ProfilerDriver.GetRawFrameDataView(frame, 0))
             {
-                if (raw != null && raw.valid)
+                var ctx = BuildFrameDataContext(frame, raw);
+                foreach (var filter in m_Filters)
                 {
-                    bool needEditorLoop = checkSpike && IsEditorSession();
-                    int gcMarkerId = checkGc ? raw.GetMarkerId("GC.Alloc") : FrameDataView.invalidMarkerId;
-                    bool gcValid = gcMarkerId != FrameDataView.invalidMarkerId;
-
-                    for (int i = 0; i < raw.sampleCount; i++)
-                    {
-                        if (needEditorLoop || checkSearch)
-                        {
-                            var name = raw.GetSampleName(i);
-
-                            if (needEditorLoop && name == "EditorLoop")
-                                editorLoopMs += raw.GetSampleTimeMs(i);
-
-                            if (checkSearch && !searchMatch)
-                            {
-                                if (name.IndexOf(m_SearchString, StringComparison.OrdinalIgnoreCase) >= 0)
-                                    searchMatch = true;
-                            }
-                        }
-
-                        if (gcValid && raw.GetSampleMarkerId(i) == gcMarkerId && raw.GetSampleMetadataCount(i) > 0)
-                            gcBytes += raw.GetSampleMetadataAsLong(i, 0);
-                    }
+                    if (filter.IsActive && filter.IsMatch(in ctx))
+                        return true;
                 }
             }
-
-            if (checkSpike && (frameTimeMs - editorLoopMs) >= m_ChartFilterThresholdMs)
-                return true;
-            if (checkGc && gcBytes >= (long)(m_GcFilterThresholdKB * 1024f))
-                return true;
-            if (searchMatch)
-                return true;
-
             return false;
         }
 
@@ -775,7 +696,6 @@ namespace LightningProfiler
             if (m_SessionCheckedFrame == lastFrame)
                 return m_IsEditorSession;
 
-            // Read session-level metadata (emitted once per session via EmitSessionMetaData)
             int firstFrame = ProfilerDriver.firstFrameIndex;
             if (firstFrame < 0) return m_IsEditorSession;
             var view = ProfilerDriver.GetHierarchyFrameDataView(firstFrame, 0, HierarchyFrameDataView.ViewModes.Default, 0, false);
@@ -789,41 +709,11 @@ namespace LightningProfiler
             return m_IsEditorSession;
         }
 
-        /// Returns the total EditorLoop time in ms for the given frame (sums all EditorLoop samples).
-        static float GetEditorLoopTimeMs(int frameIndex)
-        {
-            float totalMs = 0f;
-            using (var raw = ProfilerDriver.GetRawFrameDataView(frameIndex, 0))
-            {
-                if (raw == null || !raw.valid)
-                    return 0f;
-                for (int i = 0; i < raw.sampleCount; i++)
-                {
-                    if (raw.GetSampleName(i) == "EditorLoop")
-                        totalMs += raw.GetSampleTimeMs(i);
-                }
-            }
-            return totalMs;
-        }
-
-        /// Collects the sample indices of all EditorLoop samples (they have no children).
-        static HashSet<int> FindEditorLoopIndices(RawFrameDataView raw)
-        {
-            var indices = new HashSet<int>();
-            for (int i = 0; i < raw.sampleCount; i++)
-            {
-                if (raw.GetSampleName(i) == "EditorLoop")
-                    indices.Add(i);
-            }
-            return indices;
-        }
-
         void UpdatePauseCallbackSubscription()
         {
-            bool anyFilter = m_ChartFilterThresholdMs > 0f || m_GcFilterThresholdKB > 0f || !string.IsNullOrEmpty(m_SearchString);
-            bool needPauseOrLog = (m_PauseOnFilter || m_LogOnFilter) && anyFilter;
-            bool needSaveFilter = m_SaveMarkedOnly;
-            bool shouldSubscribe = needPauseOrLog || needSaveFilter;
+            bool anyActive = AnyFilterActive();
+            bool needPauseOrLog = (m_PauseOnFilter || m_LogOnFilter) && anyActive;
+            bool shouldSubscribe = needPauseOrLog || m_SaveMarkedOnly;
 
             if (shouldSubscribe && !m_PauseCallbackSubscribed)
             {
@@ -839,11 +729,10 @@ namespace LightningProfiler
 
         void OnNewProfilerFrame(int connectionId, int frameIndex)
         {
-            // --- Save-marked-only: check frameIndex directly (buffer=1, frameIndex-1 is gone) ---
+            // --- Save-marked-only ---
             if (m_SaveMarkedOnly)
             {
-                bool saveIsMarked = IsFrameMarked(frameIndex);
-                if (saveIsMarked)
+                if (IsFrameMarked(frameIndex))
                 {
                     string tempDir = System.IO.Path.Combine(Application.temporaryCachePath, "MarkedFrames");
                     if (!System.IO.Directory.Exists(tempDir))
@@ -860,55 +749,28 @@ namespace LightningProfiler
 
             bool isPlaying = EditorApplication.isPlaying && !EditorApplication.isPaused;
 
-            // --- Determine if frame is "marked" by any active filter (for pause/log/highlight) ---
-
-            // Check spike threshold.
-            bool isSpike = false;
-            if (m_ChartFilterThresholdMs > 0f)
+            // Check if frame matches any active filter
+            bool isMarked = false;
+            using (var raw = ProfilerDriver.GetRawFrameDataView(checkFrame, 0))
             {
-                float frameTimeMs;
-                using (var iter = new ProfilerFrameDataIterator())
+                var ctx = BuildFrameDataContext(checkFrame, raw);
+                foreach (var filter in m_Filters)
                 {
-                    iter.SetRoot(checkFrame, 0);
-                    frameTimeMs = iter.frameTimeMS;
+                    if (filter.IsActive && filter.IsMatch(in ctx))
+                    {
+                        isMarked = true;
+                        break;
+                    }
                 }
-                if (IsEditorSession())
-                    frameTimeMs -= GetEditorLoopTimeMs(checkFrame);
-                if (frameTimeMs >= m_ChartFilterThresholdMs)
-                    isSpike = true;
             }
-
-            // Check GC threshold.
-            bool isGcSpike = false;
-            if (m_GcFilterThresholdKB > 0f)
-            {
-                long gcBytes = GetFrameGcAllocBytes(checkFrame, 0, IsEditorSession());
-                if (gcBytes >= (long)(m_GcFilterThresholdKB * 1024f))
-                    isGcSpike = true;
-            }
-
-            // Check search term match.
-            bool isSearchMatch = false;
-            if (!string.IsNullOrEmpty(m_SearchString))
-            {
-                int threadIndex = m_FrameDataHierarchyView.threadIndex;
-                if (threadIndex < 0) threadIndex = 0;
-                if (FrameContainsSearchTerm(checkFrame, threadIndex, m_SearchString))
-                    isSearchMatch = true;
-            }
-
-            bool isMarked = isSpike || isGcSpike || isSearchMatch;
 
             if (isMarked && m_LogOnFilter)
                 LogSpikeFrame(checkFrame);
 
-            // --- Pause logic (play mode only) ---
             if (!isPlaying)
                 return;
 
-            bool shouldPause = isMarked && m_PauseOnFilter;
-
-            if (shouldPause)
+            if (isMarked && m_PauseOnFilter)
             {
                 var pauseFrame = checkFrame;
 
@@ -923,9 +785,113 @@ namespace LightningProfiler
             }
         }
 
+        void OnSearchChanged(string newSearch)
+        {
+            m_SearchFilter.SetSearchString(newSearch);
+            UpdatePauseCallbackSubscription();
+            ProfilerWindow.Repaint();
+        }
+
+        // ─── Highlight strips ───────────────────────────────────────────────
+
+        static GUIContent s_PrevFrameIcon;
+        static GUIContent s_NextFrameIcon;
+
+        void DrawCombinedHighlightStrip(Rect containerRect)
+        {
+            if (s_PrevFrameIcon == null)
+                s_PrevFrameIcon = EditorGUIUtility.TrIconContent("Profiler.PrevFrame", "Jump to previous matched frame");
+            if (s_NextFrameIcon == null)
+                s_NextFrameIcon = EditorGUIUtility.TrIconContent("Profiler.NextFrame", "Jump to next matched frame");
+
+            int frameCount = ProfilerUserSettings.frameCount;
+            int firstEmptyFrame = ProfilerDriver.lastFrameIndex + 1 - frameCount;
+            float sideWidth = Chart.kSideWidth;
+            int selectedFrame = (int)ProfilerWindow.selectedFrameIndex;
+            int selectedRelative = selectedFrame - firstEmptyFrame;
+
+            bool anyChanged = false;
+            const float btnWidth = 15f;
+
+            foreach (var filter in m_Filters)
+            {
+                // Reserve full row, then split at sideWidth using absolute rects
+                var rowRect = GUILayoutUtility.GetRect(containerRect.width, k_StripHeight);
+
+                // --- Left side: nav buttons + filter controls (clipped to sideWidth) ---
+                var prevRect = new Rect(rowRect.x, rowRect.y, btnWidth, k_StripHeight);
+                var nextRect = new Rect(rowRect.x + btnWidth, rowRect.y, btnWidth, k_StripHeight);
+
+                if (GUI.Button(prevRect, s_PrevFrameIcon, EditorStyles.iconButton))
+                    JumpToMatchedFrame(filter, selectedFrame, -1);
+                if (GUI.Button(nextRect, s_NextFrameIcon, EditorStyles.iconButton))
+                    JumpToMatchedFrame(filter, selectedFrame, +1);
+
+                // Filter controls clipped to the remaining side area
+                var controlsRect = new Rect(rowRect.x + btnWidth * 2f, rowRect.y,
+                    sideWidth - btnWidth * 2f, k_StripHeight);
+                GUI.BeginClip(controlsRect);
+                GUILayout.BeginArea(new Rect(0, 0, controlsRect.width, controlsRect.height));
+                EditorGUILayout.BeginHorizontal(GUILayout.Height(k_StripHeight));
+                anyChanged |= filter.DrawToolbarControls();
+                EditorGUILayout.EndHorizontal();
+                GUILayout.EndArea();
+                GUI.EndClip();
+
+                // --- Right side: strip visualization (aligned with chart) ---
+                var vizRect = new Rect(rowRect.x + sideWidth, rowRect.y,
+                    rowRect.width - sideWidth, k_StripHeight);
+
+                if (Event.current.type == EventType.Repaint && vizRect.width > 0f)
+                {
+                    float frameWidth = vizRect.width / frameCount;
+
+                    EditorGUI.DrawRect(vizRect, new Color(0.18f, 0.18f, 0.18f, 0.9f));
+
+                    foreach (var frame in filter.MatchedFrames)
+                    {
+                        int rel = frame - firstEmptyFrame;
+                        if (rel < 0 || rel >= frameCount) continue;
+                        EditorGUI.DrawRect(new Rect(vizRect.x + rel * frameWidth, vizRect.y,
+                            Mathf.Max(1f, frameWidth), k_StripHeight), filter.StripColor);
+                    }
+
+                    if (selectedRelative >= 0 && selectedRelative < frameCount)
+                        EditorGUI.DrawRect(new Rect(vizRect.x + selectedRelative * frameWidth, vizRect.y,
+                            Mathf.Max(2f, frameWidth), k_StripHeight), new Color(1f, 1f, 1f, 0.8f));
+                }
+            }
+
+            if (anyChanged)
+                UpdatePauseCallbackSubscription();
+        }
+
+        void JumpToMatchedFrame(IFrameFilter filter, int currentFrame, int direction)
+        {
+            int bestFrame = -1;
+
+            foreach (var frame in filter.MatchedFrames)
+            {
+                if (direction > 0 && frame > currentFrame)
+                {
+                    if (bestFrame < 0 || frame < bestFrame)
+                        bestFrame = frame;
+                }
+                else if (direction < 0 && frame < currentFrame)
+                {
+                    if (bestFrame < 0 || frame > bestFrame)
+                        bestFrame = frame;
+                }
+            }
+
+            if (bestFrame >= 0)
+                m_ProfilerWindowController.selectedFrameIndex = bestFrame;
+        }
+
+        // ─── Logging ────────────────────────────────────────────────────────
+
         void LogSpikeFrame(int frameIndex)
         {
-            // Rate-limit to prevent feedback loop when profiling the editor.
             double now = EditorApplication.timeSinceStartup;
             if (now - m_LastSpikeLogTime < k_SpikeLogCooldownSeconds)
                 return;
@@ -937,17 +903,16 @@ namespace LightningProfiler
             using (var iter = new ProfilerFrameDataIterator())
             {
                 iter.SetRoot(frameIndex, 0);
-                sb.Append($"[Spike] Frame {frameIndex} — CPU: {iter.frameTimeMS:F2}ms, GPU: {iter.frameGpuTimeMS:F2}ms (threshold: {m_ChartFilterThresholdMs:F0}ms)");
+                float threshold = m_SpikeFilter != null ? m_SpikeFilter.ThresholdMs : 0f;
+                sb.Append($"[Filter] Frame {frameIndex} — CPU: {iter.frameTimeMS:F2}ms, GPU: {iter.frameGpuTimeMS:F2}ms (spike threshold: {threshold:F0}ms)");
             }
 
-            // Dump sample hierarchy from the main thread (capped to avoid OOM).
             using (var raw = ProfilerDriver.GetRawFrameDataView(frameIndex, 0))
             {
                 if (raw != null && raw.valid && raw.sampleCount > 1)
                 {
                     int sampleLimit = Mathf.Min(raw.sampleCount, k_MaxLogSamples + 1);
 
-                    // Build depth array via pre-order walk using children counts.
                     var depths = new int[raw.sampleCount];
                     var depthStack = new Stack<(int remaining, int depth)>();
                     depthStack.Push((raw.GetSampleChildrenCount(0), 0));
@@ -965,7 +930,6 @@ namespace LightningProfiler
                             depthStack.Push((childCount, depths[i]));
                     }
 
-                    // Print each sample indented by depth.
                     for (int i = 1; i < sampleLimit; i++)
                     {
                         float timeMs = raw.GetSampleTimeMs(i);
@@ -987,294 +951,5 @@ namespace LightningProfiler
 
             Debug.Log(sb.ToString());
         }
-
-        void UpdateThresholdFrameMatches()
-        {
-            int lastFrame = ProfilerDriver.lastFrameIndex;
-            bool thresholdChanged = m_ChartFilterThresholdMs != m_ThresholdCachedValue;
-
-            if (!thresholdChanged && m_ThresholdCachedLastFrame == lastFrame)
-                return;
-
-            int firstFrame = ProfilerDriver.firstFrameIndex;
-            if (firstFrame < 0 || lastFrame < 0)
-                return;
-
-            if (thresholdChanged)
-            {
-                // Full rescan needed — but limit to visible range only.
-                m_ThresholdHotFrames.Clear();
-                m_ThresholdCachedValue = m_ChartFilterThresholdMs;
-
-                int visibleFirst = Mathf.Max(firstFrame, lastFrame + 1 - ProfilerUserSettings.frameCount);
-                for (int frame = visibleFirst; frame <= lastFrame; frame++)
-                    CheckAndAddFrame(frame);
-            }
-            else
-            {
-                // Incremental — only scan new frames since last check.
-                int scanFrom = Mathf.Max(firstFrame, m_ThresholdCachedLastFrame + 1);
-                for (int frame = scanFrom; frame <= lastFrame; frame++)
-                    CheckAndAddFrame(frame);
-
-                // Trim frames that fell out of the available range.
-                if (m_ThresholdHotFrames.Count > 0)
-                    m_ThresholdHotFrames.RemoveWhere(f => f < firstFrame);
-            }
-
-            m_ThresholdCachedLastFrame = lastFrame;
-        }
-
-        void CheckAndAddFrame(int frame)
-        {
-            float frameTimeMs;
-            using (var iter = new ProfilerFrameDataIterator())
-            {
-                iter.SetRoot(frame, 0);
-                frameTimeMs = iter.frameTimeMS;
-            }
-            if (IsEditorSession())
-                frameTimeMs -= GetEditorLoopTimeMs(frame);
-            if (frameTimeMs >= m_ChartFilterThresholdMs)
-                m_ThresholdHotFrames.Add(frame);
-        }
-
-        void DrawCombinedHighlightStrip(Rect containerRect)
-        {
-            bool hasSpike = m_ChartFilterThresholdMs > 0f;
-            bool hasGc = m_GcFilterThresholdKB > 0f;
-            bool hasSearch = !string.IsNullOrEmpty(m_SearchString);
-
-            int frameCount = ProfilerUserSettings.frameCount;
-            int firstEmptyFrame = ProfilerDriver.lastFrameIndex + 1 - frameCount;
-            float sideWidth = Chart.kSideWidth;
-            int selectedFrame = (int)ProfilerWindow.selectedFrameIndex;
-            int selectedRelative = selectedFrame - firstEmptyFrame;
-
-            // --- Spike strip (top) ---
-            if (hasSpike)
-            {
-                var stripRect = GUILayoutUtility.GetRect(containerRect.width, k_ThresholdStripHeight);
-                if (Event.current.type == EventType.Repaint)
-                {
-                    var drawRect = new Rect(stripRect.x + sideWidth, stripRect.y, stripRect.width - sideWidth, k_ThresholdStripHeight);
-                    float frameWidth = drawRect.width / frameCount;
-
-                    EditorGUI.DrawRect(drawRect, new Color(0.18f, 0.18f, 0.18f, 0.9f));
-
-                    var hotColor = new Color(0.2f, 0.85f, 0.4f, 0.95f);
-                    foreach (var frame in m_ThresholdHotFrames)
-                    {
-                        int rel = frame - firstEmptyFrame;
-                        if (rel < 0 || rel >= frameCount) continue;
-                        EditorGUI.DrawRect(new Rect(drawRect.x + rel * frameWidth, drawRect.y, Mathf.Max(1f, frameWidth), k_ThresholdStripHeight), hotColor);
-                    }
-
-                    if (selectedRelative >= 0 && selectedRelative < frameCount)
-                        EditorGUI.DrawRect(new Rect(drawRect.x + selectedRelative * frameWidth, drawRect.y, Mathf.Max(2f, frameWidth), k_ThresholdStripHeight), new Color(1f, 1f, 1f, 0.8f));
-
-                    var labelRect = new Rect(stripRect.x + 2f, stripRect.y, sideWidth - 4f, k_ThresholdStripHeight);
-                    GUI.Label(labelRect, $">={m_ChartFilterThresholdMs:F0}ms", EditorStyles.miniLabel);
-                }
-            }
-
-            // --- GC strip (below spike) ---
-            if (hasGc)
-            {
-                var stripRect = GUILayoutUtility.GetRect(containerRect.width, k_GcStripHeight);
-                if (Event.current.type == EventType.Repaint)
-                {
-                    var drawRect = new Rect(stripRect.x + sideWidth, stripRect.y, stripRect.width - sideWidth, k_GcStripHeight);
-                    float frameWidth = drawRect.width / frameCount;
-
-                    EditorGUI.DrawRect(drawRect, new Color(0.18f, 0.18f, 0.18f, 0.9f));
-
-                    var gcColor = new Color(0.95f, 0.3f, 0.3f, 0.95f);
-                    foreach (var frame in m_GcHotFrames)
-                    {
-                        int rel = frame - firstEmptyFrame;
-                        if (rel < 0 || rel >= frameCount) continue;
-                        EditorGUI.DrawRect(new Rect(drawRect.x + rel * frameWidth, drawRect.y, Mathf.Max(1f, frameWidth), k_GcStripHeight), gcColor);
-                    }
-
-                    if (selectedRelative >= 0 && selectedRelative < frameCount)
-                        EditorGUI.DrawRect(new Rect(drawRect.x + selectedRelative * frameWidth, drawRect.y, Mathf.Max(2f, frameWidth), k_GcStripHeight), new Color(1f, 1f, 1f, 0.8f));
-
-                    var labelRect = new Rect(stripRect.x + 2f, stripRect.y, sideWidth - 4f, k_GcStripHeight);
-                    GUI.Label(labelRect, $">={m_GcFilterThresholdKB:F0}KB", EditorStyles.miniLabel);
-                }
-            }
-
-            // --- Search match strip (below GC) ---
-            if (hasSearch && m_SearchMatchFrames.Count > 0)
-            {
-                var stripRect = GUILayoutUtility.GetRect(containerRect.width, k_SearchStripHeight);
-                if (Event.current.type == EventType.Repaint)
-                {
-                    var drawRect = new Rect(stripRect.x + sideWidth, stripRect.y, stripRect.width - sideWidth, k_SearchStripHeight);
-                    float frameWidth = drawRect.width / frameCount;
-
-                    EditorGUI.DrawRect(drawRect, new Color(0.12f, 0.12f, 0.12f, 0.8f));
-
-                    var matchColor = new Color(1f, 0.75f, 0.1f, 0.95f);
-                    foreach (var frame in m_SearchMatchFrames)
-                    {
-                        int rel = frame - firstEmptyFrame;
-                        if (rel < 0 || rel >= frameCount) continue;
-                        EditorGUI.DrawRect(new Rect(drawRect.x + rel * frameWidth, drawRect.y, Mathf.Max(1f, frameWidth), k_SearchStripHeight), matchColor);
-                    }
-
-                    if (selectedRelative >= 0 && selectedRelative < frameCount)
-                        EditorGUI.DrawRect(new Rect(drawRect.x + selectedRelative * frameWidth, drawRect.y, Mathf.Max(2f, frameWidth), k_SearchStripHeight), new Color(1f, 1f, 1f, 0.8f));
-
-                    var labelRect = new Rect(stripRect.x + 2f, stripRect.y, sideWidth - 4f, k_SearchStripHeight);
-                    GUI.Label(labelRect, "search", EditorStyles.miniLabel);
-                }
-            }
-        }
-
-        static long GetFrameGcAllocBytes(int frameIndex, int threadIndex, bool excludeEditorLoop = false)
-        {
-            long totalGcBytes = 0;
-            using (var raw = ProfilerDriver.GetRawFrameDataView(frameIndex, threadIndex))
-            {
-                if (raw == null || !raw.valid)
-                    return 0;
-                int gcMarkerId = raw.GetMarkerId("GC.Alloc");
-                if (gcMarkerId == FrameDataView.invalidMarkerId)
-                    return 0;
-
-                HashSet<int> editorIndices = null;
-                if (excludeEditorLoop)
-                    editorIndices = FindEditorLoopIndices(raw);
-
-                for (int i = 0; i < raw.sampleCount; i++)
-                {
-                    if (editorIndices != null && editorIndices.Contains(i))
-                        continue;
-                    if (raw.GetSampleMarkerId(i) == gcMarkerId && raw.GetSampleMetadataCount(i) > 0)
-                        totalGcBytes += raw.GetSampleMetadataAsLong(i, 0);
-                }
-            }
-            return totalGcBytes;
-        }
-
-        void UpdateGcFrameMatches()
-        {
-            int lastFrame = ProfilerDriver.lastFrameIndex;
-            bool thresholdChanged = m_GcFilterThresholdKB != m_GcCachedThreshold;
-
-            if (!thresholdChanged && m_GcCachedLastFrame == lastFrame)
-                return;
-
-            int firstFrame = ProfilerDriver.firstFrameIndex;
-            if (firstFrame < 0 || lastFrame < 0)
-                return;
-
-            if (thresholdChanged)
-            {
-                m_GcHotFrames.Clear();
-                m_GcCachedThreshold = m_GcFilterThresholdKB;
-
-                int visibleFirst = Mathf.Max(firstFrame, lastFrame + 1 - ProfilerUserSettings.frameCount);
-                for (int frame = visibleFirst; frame <= lastFrame; frame++)
-                    CheckAndAddGcFrame(frame);
-            }
-            else
-            {
-                int scanFrom = Mathf.Max(firstFrame, m_GcCachedLastFrame + 1);
-                for (int frame = scanFrom; frame <= lastFrame; frame++)
-                    CheckAndAddGcFrame(frame);
-
-                if (m_GcHotFrames.Count > 0)
-                    m_GcHotFrames.RemoveWhere(f => f < firstFrame);
-            }
-
-            m_GcCachedLastFrame = lastFrame;
-        }
-
-        void CheckAndAddGcFrame(int frame)
-        {
-            long gcBytes = GetFrameGcAllocBytes(frame, 0, IsEditorSession());
-            if (gcBytes >= (long)(m_GcFilterThresholdKB * 1024f))
-                m_GcHotFrames.Add(frame);
-        }
-
-        void OnSearchChanged(string newSearch)
-        {
-            m_SearchString = newSearch;
-            m_SearchMatchFrames.Clear();
-            m_SearchMatchCachedQuery = null;
-            m_SearchMatchCachedLastFrame = -1;
-            UpdatePauseCallbackSubscription();
-            ProfilerWindow.Repaint();
-        }
-
-        void UpdateSearchFrameMatches()
-        {
-            if (string.IsNullOrEmpty(m_SearchString))
-            {
-                m_SearchMatchFrames.Clear();
-                return;
-            }
-
-            int lastFrame = ProfilerDriver.lastFrameIndex;
-            bool queryChanged = m_SearchString != m_SearchMatchCachedQuery;
-
-            if (!queryChanged && m_SearchMatchCachedLastFrame == lastFrame)
-                return;
-
-            int firstFrame = ProfilerDriver.firstFrameIndex;
-            if (firstFrame < 0 || lastFrame < 0)
-                return;
-
-            int threadIndex = m_FrameDataHierarchyView.threadIndex;
-            if (threadIndex < 0)
-                threadIndex = 0;
-
-            if (queryChanged)
-            {
-                // Full rescan — limit to visible range.
-                m_SearchMatchFrames.Clear();
-                m_SearchMatchCachedQuery = m_SearchString;
-
-                int visibleFirst = Mathf.Max(firstFrame, lastFrame + 1 - ProfilerUserSettings.frameCount);
-                for (int frame = visibleFirst; frame <= lastFrame; frame++)
-                {
-                    if (FrameContainsSearchTerm(frame, threadIndex, m_SearchString))
-                        m_SearchMatchFrames.Add(frame);
-                }
-            }
-            else
-            {
-                // Incremental — only scan new frames.
-                int scanFrom = Mathf.Max(firstFrame, m_SearchMatchCachedLastFrame + 1);
-                for (int frame = scanFrom; frame <= lastFrame; frame++)
-                {
-                    if (FrameContainsSearchTerm(frame, threadIndex, m_SearchString))
-                        m_SearchMatchFrames.Add(frame);
-                }
-                m_SearchMatchFrames.RemoveWhere(f => f < firstFrame);
-            }
-
-            m_SearchMatchCachedLastFrame = lastFrame;
-        }
-
-        static bool FrameContainsSearchTerm(int frameIndex, int threadIndex, string search)
-        {
-            using (var raw = ProfilerDriver.GetRawFrameDataView(frameIndex, threadIndex))
-            {
-                if (raw == null || !raw.valid)
-                    return false;
-                for (int i = 1; i < raw.sampleCount; i++)
-                {
-                    var name = raw.GetSampleName(i);
-                    if (name.IndexOf(search, StringComparison.OrdinalIgnoreCase) >= 0)
-                        return true;
-                }
-            }
-            return false;
-        }
-
     }
 }
