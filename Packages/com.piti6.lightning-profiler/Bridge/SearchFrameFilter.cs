@@ -8,18 +8,15 @@ namespace LightningProfiler
 {
     /// <summary>
     /// Filters frames containing a profiler sample whose name matches a search term (case-insensitive).
-    /// Uses marker-ID caching so each unique marker name is checked only once per frame,
-    /// avoiding repeated string allocation and substring search across thousands of samples.
+    /// Uses marker-ID caching so each unique marker name is checked only once per frame.
     /// </summary>
     public sealed class SearchFrameFilter : FrameFilterBase
     {
         string m_SearchString;
-        string m_CachedQuery;
         readonly Func<int> m_GetThreadIndex;
         readonly Action m_DrawSearchBar;
 
         // Marker ID → matches search term. Reused across frames while the search term is unchanged.
-        // Invalidated when the search term changes.
         readonly Dictionary<int, bool> m_MarkerMatchCache = new Dictionary<int, bool>();
 
         public SearchFrameFilter(Func<int> getThreadIndex, Action drawSearchBar)
@@ -37,6 +34,7 @@ namespace LightningProfiler
         public void SetSearchString(string search)
         {
             m_SearchString = search;
+            m_MarkerMatchCache.Clear();
             InvalidateCache();
         }
 
@@ -46,18 +44,10 @@ namespace LightningProfiler
             return false;
         }
 
-        public override bool IsMatch(in FrameDataContext ctx)
+        public override bool FrameMatches(int frameIndex)
         {
             if (string.IsNullOrEmpty(m_SearchString)) return false;
-            if (ctx.RawData == null || !ctx.RawData.valid) return false;
-            return RawDataContainsSearch(ctx.RawData, m_SearchString, m_MarkerMatchCache);
-        }
-
-        protected override bool HasParameterChanged() => m_SearchString != m_CachedQuery;
-        protected override void SnapshotParameter() { m_CachedQuery = m_SearchString; }
-
-        protected override bool TestFrame(int frameIndex)
-        {
+            
             int threadIndex = m_GetThreadIndex();
             if (threadIndex < 0) threadIndex = 0;
             using (var raw = ProfilerDriver.GetRawFrameDataView(frameIndex, threadIndex))
@@ -68,11 +58,6 @@ namespace LightningProfiler
             }
         }
 
-        /// <summary>
-        /// Checks if any sample in the raw data matches the search term.
-        /// Each unique marker ID is resolved to a name only once; subsequent samples
-        /// with the same marker ID use the cached result (int comparison instead of string search).
-        /// </summary>
         static bool RawDataContainsSearch(RawFrameDataView raw, string search, Dictionary<int, bool> markerCache)
         {
             for (int i = 1; i < raw.sampleCount; i++)
@@ -92,7 +77,6 @@ namespace LightningProfiler
 
         public override void InvalidateCache()
         {
-            m_CachedQuery = null;
             m_MarkerMatchCache.Clear();
             base.InvalidateCache();
         }

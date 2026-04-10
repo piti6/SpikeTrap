@@ -30,19 +30,19 @@ namespace LightningProfiler
         /// Return true if the filter parameter changed this frame (triggers subscription update).
         /// </summary>
         bool DrawToolbarControls();
+        
+        /// <summary>
+        /// Test a single frame by index. Opens a RawFrameDataView, builds a
+        /// <see cref="FrameDataContext"/>, and calls <see cref="IsMatch"/>.
+        /// Override for more efficient per-frame checks.
+        /// </summary>
+        bool FrameMatches(int frameIndex);
 
         /// <summary>
         /// Update the matched-frames cache for the visible frame range.
         /// Called each GUI frame. Uses incremental scanning when the parameter hasn't changed.
         /// </summary>
         void UpdateMatches();
-
-        /// <summary>
-        /// Test a single frame against this filter using pre-fetched data.
-        /// Used by OnNewProfilerFrame and IsFrameMarked for real-time pause/log/collect.
-        /// The <paramref name="context"/> must not be stored beyond this call.
-        /// </summary>
-        bool IsMatch(in FrameDataContext context);
 
         /// <summary>Reset all cached state (matched frames, cached parameters).</summary>
         void InvalidateCache();

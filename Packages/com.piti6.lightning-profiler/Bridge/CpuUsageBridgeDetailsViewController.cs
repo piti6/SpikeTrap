@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
-using Unity.Collections;
 using Unity.Profiling.Editor;
 using UnityEditor;
 using UnityEditor.Profiling;
@@ -87,6 +86,8 @@ namespace LightningProfiler
         SpikeFrameFilter m_SpikeFilter;
         SearchFrameFilter m_SearchFilter;
         const float k_StripHeight = 20f;
+        int m_PrevFirstFrame = -1;
+        int m_PrevLastFrame = -1;
 
         static readonly List<Func<IFrameFilter>> s_CustomFilterFactories = new List<Func<IFrameFilter>>();
 
@@ -326,6 +327,17 @@ namespace LightningProfiler
                 DrawCollectingOverlay();
                 return;
             }
+
+            // Detect frame range reset (file loaded or Clear pressed) and invalidate caches
+            int curFirst = ProfilerDriver.firstFrameIndex;
+            int curLast = ProfilerDriver.lastFrameIndex;
+            if (m_PrevFirstFrame >= 0 && (curFirst > m_PrevLastFrame || curLast < m_PrevFirstFrame || curLast < m_PrevLastFrame))
+            {
+                foreach (var filter in m_Filters)
+                    filter.InvalidateCache();
+            }
+            m_PrevFirstFrame = curFirst;
+            m_PrevLastFrame = curLast;
 
             // Update and draw filter strips
             foreach (var filter in m_Filters)
@@ -650,42 +662,15 @@ namespace LightningProfiler
             return false;
         }
 
-        FrameDataContext BuildFrameDataContext(int frame, RawFrameDataView raw)
-        {
-            float frameTimeMs;
-            using (var iter = new ProfilerFrameDataIterator())
-            {
-                iter.SetRoot(frame, 0);
-                frameTimeMs = iter.frameTimeMS;
-            }
-
-            bool isEditor = IsEditorSession();
-            float editorLoopMs = 0f;
-            if (isEditor && raw != null && raw.valid)
-            {
-                for (int i = 0; i < raw.sampleCount; i++)
-                {
-                    if (raw.GetSampleName(i) == "EditorLoop")
-                        editorLoopMs += raw.GetSampleTimeMs(i);
-                }
-            }
-
-            return new FrameDataContext(frame, frameTimeMs, isEditor, raw, editorLoopMs);
-        }
-
-        bool IsFrameMarked(int frame)
+        bool IsFrameMarked(int frameIndex)
         {
             if (!AnyFilterActive())
                 return false;
 
-            using (var raw = ProfilerDriver.GetRawFrameDataView(frame, 0))
+            foreach (var filter in m_Filters)
             {
-                var ctx = BuildFrameDataContext(frame, raw);
-                foreach (var filter in m_Filters)
-                {
-                    if (filter.IsActive && filter.IsMatch(in ctx))
-                        return true;
-                }
+                if (filter.IsActive && filter.FrameMatches(frameIndex))
+                    return true;
             }
             return false;
         }
@@ -751,16 +736,12 @@ namespace LightningProfiler
 
             // Check if frame matches any active filter
             bool isMarked = false;
-            using (var raw = ProfilerDriver.GetRawFrameDataView(checkFrame, 0))
+            foreach (var filter in m_Filters)
             {
-                var ctx = BuildFrameDataContext(checkFrame, raw);
-                foreach (var filter in m_Filters)
+                if (filter.IsActive && filter.FrameMatches(checkFrame))
                 {
-                    if (filter.IsActive && filter.IsMatch(in ctx))
-                    {
-                        isMarked = true;
-                        break;
-                    }
+                    isMarked = true;
+                    break;
                 }
             }
 

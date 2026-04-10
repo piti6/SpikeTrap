@@ -15,7 +15,7 @@ namespace LightningProfiler
         const string k_UnitKey = "LightningProfiler.GcUnit";
 
         float m_ThresholdKB;
-        float m_CachedThreshold;
+        float m_PrevThresholdKB;
         readonly Func<bool> m_IsEditorSession;
 
         enum SizeUnit { KB, MB }
@@ -23,9 +23,11 @@ namespace LightningProfiler
         SizeUnit m_Unit;
 
         public GcFrameFilter(Func<bool> isEditorSession)
+            : base(isEditorSession)
         {
             m_IsEditorSession = isEditorSession;
             m_ThresholdKB = EditorPrefs.GetFloat(k_EditorPrefsKey, 0f);
+            m_PrevThresholdKB = m_ThresholdKB;
             m_Unit = (SizeUnit)EditorPrefs.GetInt(k_UnitKey, 0);
         }
 
@@ -57,31 +59,60 @@ namespace LightningProfiler
 
             m_ThresholdKB = newKB;
             EditorPrefs.SetFloat(k_EditorPrefsKey, m_ThresholdKB);
+            SetDirty();
             return true;
         }
 
-        public override bool IsMatch(in FrameDataContext ctx)
+        public override void UpdateMatches()
         {
-            if (m_ThresholdKB <= 0f) return false;
-            if (ctx.RawData == null || !ctx.RawData.valid) return false;
+            if (!IsActive) return;
 
-            long thresholdBytes = (long)(m_ThresholdKB * 1024f);
-            return FrameGcExceedsThreshold(ctx.RawData, thresholdBytes);
+            bool thresholdChanged = m_ThresholdKB != m_PrevThresholdKB;
+            if (!thresholdChanged)
+            {
+                base.UpdateMatches();
+                return;
+            }
+
+            if (IsDirty)
+            {
+                m_PrevThresholdKB = m_ThresholdKB;
+                base.UpdateMatches();
+                return;
+            }
+
+            int lastFrame = ProfilerDriver.lastFrameIndex;
+            int firstFrame = ProfilerDriver.firstFrameIndex;
+            if (firstFrame < 0 || lastFrame < 0) return;
+
+            int visibleFirst = Mathf.Max(firstFrame, lastFrame + 1 - ProfilerUserSettings.frameCount);
+
+            if (m_ThresholdKB < m_PrevThresholdKB)
+            {
+                // Lowered: existing matches still valid, only scan unmatched frames
+                for (int frame = visibleFirst; frame <= lastFrame; frame++)
+                {
+                    if (!MatchedFramesSet.Contains(frame) && FrameMatches(frame))
+                        MatchedFramesSet.Add(frame);
+                }
+            }
+            else
+            {
+                // Raised: only re-verify currently matched frames
+                MatchedFramesSet.RemoveWhere(frame => frame < firstFrame || !FrameMatches(frame));
+            }
+
+            m_PrevThresholdKB = m_ThresholdKB;
+            CachedLastFrame = lastFrame;
+            ClearDirty();
         }
 
-        protected override bool HasParameterChanged() => m_ThresholdKB != m_CachedThreshold;
-        protected override void SnapshotParameter() { m_CachedThreshold = m_ThresholdKB; }
-
-        protected override bool TestFrame(int frameIndex)
+        public override bool FrameMatches(int frameIndex)
         {
             long thresholdBytes = (long)(m_ThresholdKB * 1024f);
             return FrameGcExceedsThreshold(frameIndex, 0, m_IsEditorSession(), thresholdBytes);
         }
 
-        /// <summary>
-        /// Checks if a frame's GC allocation exceeds the threshold.
-        /// Returns as soon as the running total crosses the threshold — no need to sum everything.
-        /// </summary>
         static bool FrameGcExceedsThreshold(int frameIndex, int threadIndex, bool excludeEditorLoop, long thresholdBytes)
         {
             using (var raw = ProfilerDriver.GetRawFrameDataView(frameIndex, threadIndex))

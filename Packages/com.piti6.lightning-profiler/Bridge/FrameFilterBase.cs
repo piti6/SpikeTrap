@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using UnityEditor.Profiling;
 using UnityEditorInternal;
@@ -6,55 +7,103 @@ using UnityEngine;
 namespace LightningProfiler
 {
     /// <summary>
-    /// Abstract base class providing incremental caching for frame filters.
-    /// Subclasses implement <see cref="HasParameterChanged"/>, <see cref="SnapshotParameter"/>,
-    /// <see cref="TestFrame"/>, and <see cref="IsMatch"/>.
+    /// Base class for frame filters with built-in incremental caching.
+    /// <para>
+    /// <b>Custom filter authors</b> — implement only these 4 members:
+    /// <list type="bullet">
+    ///   <item><see cref="DisplayName"/> — filter name</item>
+    ///   <item><see cref="StripColor"/> — highlight strip color</item>
+    ///   <item><see cref="IsActive"/> — whether the filter is configured</item>
+    ///   <item><see cref="IsMatch"/> — frame matching logic using pre-fetched data</item>
+    /// </list>
+    /// Call <see cref="SetDirty"/> when your filter parameter changes.
+    /// Optionally override <see cref="StripLabel"/> and <see cref="DrawToolbarControls"/>.
+    /// </para>
     /// </summary>
     public abstract class FrameFilterBase : IFrameFilter
     {
-        protected readonly HashSet<int> m_MatchedFrames = new HashSet<int>();
-        protected int m_CachedLastFrame = -1;
+        readonly HashSet<int> m_MatchedFrames = new HashSet<int>();
+        int m_CachedLastFrame = -1;
+        bool m_Dirty;
+        readonly Func<bool> m_IsEditorSession;
 
+        /// <summary>Direct access to the matched frames set for subclass optimization.</summary>
+        protected HashSet<int> MatchedFramesSet => m_MatchedFrames;
+        /// <summary>Last frame index processed by UpdateMatches.</summary>
+        protected int CachedLastFrame { get => m_CachedLastFrame; set => m_CachedLastFrame = value; }
+        /// <summary>Whether a full rescan is pending.</summary>
+        protected bool IsDirty => m_Dirty;
+        /// <summary>Clear the dirty flag without rescanning.</summary>
+        protected void ClearDirty() => m_Dirty = false;
+
+        /// <param name="isEditorSession">
+        /// Optional delegate returning whether the profiling session is an editor session.
+        /// Used by the default <see cref="TestFrame"/> to build <see cref="FrameDataContext"/>.
+        /// </param>
+        protected FrameFilterBase(Func<bool> isEditorSession = null)
+        {
+            m_IsEditorSession = isEditorSession ?? (() => true);
+        }
+
+        // ─── Required (implement these) ─────────────────────────────────────
+
+        /// <summary>Display name for the filter.</summary>
         public abstract string DisplayName { get; }
+
+        /// <summary>Highlight strip color.</summary>
         public abstract Color StripColor { get; }
-        public abstract string StripLabel { get; }
+
+        /// <summary>Whether the filter is currently active (parameter is set).</summary>
         public abstract bool IsActive { get; }
+
+        // ─── Optional (override if needed) ──────────────────────────────────
+
+        /// <summary>Label on the strip. Defaults to <see cref="DisplayName"/>.</summary>
+        public virtual string StripLabel => DisplayName;
+
+        /// <summary>Draw IMGUI controls. Return true if the parameter changed.</summary>
+        public virtual bool DrawToolbarControls() => false;
+
+        // ─── Call this when your parameter changes ──────────────────────────
+
+        /// <summary>
+        /// Mark the cache as dirty so matched frames are rescanned.
+        /// Call this whenever your filter parameter changes.
+        /// </summary>
+        protected void SetDirty() { m_Dirty = true; }
+
+        // ─── Provided by base (no need to touch) ───────────────────────────
+
         public IReadOnlyCollection<int> MatchedFrames => m_MatchedFrames;
 
-        public abstract bool DrawToolbarControls();
-        public abstract bool IsMatch(in FrameDataContext context);
-
-        /// <summary>Returns true when the filter parameter has changed since the last full scan.</summary>
-        protected abstract bool HasParameterChanged();
-
-        /// <summary>Records the current parameter value as cached after a full rescan.</summary>
-        protected abstract void SnapshotParameter();
-
-        /// <summary>Test a single frame index. Called during UpdateMatches for incremental/full scan.</summary>
-        protected abstract bool TestFrame(int frameIndex);
-
+        /// <summary>
+        /// Test a single frame by index. Opens a RawFrameDataView, builds a
+        /// <see cref="FrameDataContext"/>, and calls <see cref="IsMatch"/>.
+        /// Override for more efficient per-frame checks.
+        /// </summary>
+        public abstract bool FrameMatches(int frameIndex);
+        
         public virtual void UpdateMatches()
         {
             if (!IsActive) return;
 
             int lastFrame = ProfilerDriver.lastFrameIndex;
-            bool paramChanged = HasParameterChanged();
 
-            if (!paramChanged && m_CachedLastFrame == lastFrame) return;
+            if (!m_Dirty && m_CachedLastFrame == lastFrame) return;
 
             int firstFrame = ProfilerDriver.firstFrameIndex;
             if (firstFrame < 0 || lastFrame < 0) return;
 
-            if (paramChanged)
+            if (m_Dirty)
             {
                 m_MatchedFrames.Clear();
-                SnapshotParameter();
+                m_Dirty = false;
 
                 int visibleFirst = Mathf.Max(firstFrame,
                     lastFrame + 1 - ProfilerUserSettings.frameCount);
                 for (int frame = visibleFirst; frame <= lastFrame; frame++)
                 {
-                    if (TestFrame(frame))
+                    if (FrameMatches(frame))
                         m_MatchedFrames.Add(frame);
                 }
             }
@@ -63,7 +112,7 @@ namespace LightningProfiler
                 int scanFrom = Mathf.Max(firstFrame, m_CachedLastFrame + 1);
                 for (int frame = scanFrom; frame <= lastFrame; frame++)
                 {
-                    if (TestFrame(frame))
+                    if (FrameMatches(frame))
                         m_MatchedFrames.Add(frame);
                 }
 
@@ -77,6 +126,7 @@ namespace LightningProfiler
         public virtual void InvalidateCache()
         {
             m_CachedLastFrame = -1;
+            m_Dirty = true;
             m_MatchedFrames.Clear();
         }
 

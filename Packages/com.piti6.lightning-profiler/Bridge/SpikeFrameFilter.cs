@@ -1,4 +1,5 @@
 using System;
+using LightningProfiler.Runtime;
 using UnityEditor;
 using UnityEditor.Profiling;
 using UnityEditorInternal;
@@ -13,10 +14,14 @@ namespace LightningProfiler
     {
         const string k_EditorPrefsKey = "LightningProfiler.ChartFilterThresholdMs";
         const string k_UnitKey = "LightningProfiler.SpikeUnit";
+        
+        const int k_SessionInfoTag = -100;
+        bool m_IsEditorSession = true;
+        int m_SessionCheckedFrame = -1;
 
         float m_ThresholdMs;
-        float m_CachedThreshold;
-        readonly Func<bool> m_IsEditorSession;
+        float m_PrevThresholdMs;
+        
         readonly Action<float> m_SyncModule;
 
         enum TimeUnit { ms, s }
@@ -24,10 +29,11 @@ namespace LightningProfiler
         TimeUnit m_Unit;
 
         public SpikeFrameFilter(Func<bool> isEditorSession, Action<float> syncModule)
+            : base(isEditorSession)
         {
-            m_IsEditorSession = isEditorSession;
             m_SyncModule = syncModule;
             m_ThresholdMs = EditorPrefs.GetFloat(k_EditorPrefsKey, 0f);
+            m_PrevThresholdMs = m_ThresholdMs;
             m_Unit = (TimeUnit)EditorPrefs.GetInt(k_UnitKey, 0);
         }
 
@@ -62,22 +68,36 @@ namespace LightningProfiler
             m_ThresholdMs = newMs;
             EditorPrefs.SetFloat(k_EditorPrefsKey, m_ThresholdMs);
             m_SyncModule?.Invoke(m_ThresholdMs);
+            SetDirty();
             return true;
         }
-
-        public override bool IsMatch(in FrameDataContext ctx)
+        
+        
+        bool IsEditorSession()
         {
-            if (m_ThresholdMs <= 0f) return false;
-            float effectiveTime = ctx.FrameTimeMs;
-            if (ctx.IsEditorSession)
-                effectiveTime -= ctx.EditorLoopTimeMs;
-            return effectiveTime >= m_ThresholdMs;
+            int lastFrame = ProfilerDriver.lastFrameIndex;
+            if (m_SessionCheckedFrame == lastFrame)
+                return m_IsEditorSession;
+
+            int firstFrame = ProfilerDriver.firstFrameIndex;
+            if (firstFrame < 0) return m_IsEditorSession;
+            var view = ProfilerDriver.GetHierarchyFrameDataView(firstFrame, 0, HierarchyFrameDataView.ViewModes.Default, 0, false);
+            if (view != null && view.valid)
+            {
+                var data = view.GetSessionMetaData<byte>(LightningProfilerSession.SessionGuid, k_SessionInfoTag);
+                if (data.IsCreated && data.Length >= 1)
+                    m_IsEditorSession = data[0] == 1;
+            }
+            m_SessionCheckedFrame = lastFrame;
+            return m_IsEditorSession;
         }
-
-        protected override bool HasParameterChanged() => m_ThresholdMs != m_CachedThreshold;
-        protected override void SnapshotParameter() { m_CachedThreshold = m_ThresholdMs; }
-
-        protected override bool TestFrame(int frameIndex)
+        
+        /// <summary>
+        /// Test a single frame by index. Opens a RawFrameDataView, builds a
+        /// <see cref="FrameDataContext"/>, and calls <see cref="IsMatch"/>.
+        /// Override for more efficient per-frame checks.
+        /// </summary>
+        public override bool FrameMatches(int frameIndex)
         {
             float frameTimeMs;
             using (var iter = new ProfilerFrameDataIterator())
@@ -85,9 +105,55 @@ namespace LightningProfiler
                 iter.SetRoot(frameIndex, 0);
                 frameTimeMs = iter.frameTimeMS;
             }
-            if (m_IsEditorSession())
+            if (IsEditorSession())
                 frameTimeMs -= GetEditorLoopTimeMs(frameIndex);
             return frameTimeMs >= m_ThresholdMs;
+        }
+
+        public override void UpdateMatches()
+        {
+            if (!IsActive) return;
+
+            bool thresholdChanged = m_ThresholdMs != m_PrevThresholdMs;
+            if (!thresholdChanged)
+            {
+                // No parameter change — use base for incremental new-frame scanning
+                base.UpdateMatches();
+                return;
+            }
+
+            if (IsDirty)
+            {
+                // Full rescan needed (e.g. profile loaded) — let base handle it
+                m_PrevThresholdMs = m_ThresholdMs;
+                base.UpdateMatches();
+                return;
+            }
+
+            int lastFrame = ProfilerDriver.lastFrameIndex;
+            int firstFrame = ProfilerDriver.firstFrameIndex;
+            if (firstFrame < 0 || lastFrame < 0) return;
+
+            int visibleFirst = Mathf.Max(firstFrame, lastFrame + 1 - ProfilerUserSettings.frameCount);
+
+            if (m_ThresholdMs < m_PrevThresholdMs)
+            {
+                // Lowered: existing matches still valid, only scan unmatched frames for new matches
+                for (int frameIndex = visibleFirst; frameIndex <= lastFrame; frameIndex++)
+                {
+                    if (!MatchedFramesSet.Contains(frameIndex) && FrameMatches(frameIndex))
+                        MatchedFramesSet.Add(frameIndex);
+                }
+            }
+            else
+            {
+                // Raised: only re-verify currently matched frames
+                MatchedFramesSet.RemoveWhere(frameIndex => frameIndex < firstFrame || !FrameMatches(frameIndex));
+            }
+
+            m_PrevThresholdMs = m_ThresholdMs;
+            CachedLastFrame = lastFrame;
+            ClearDirty();
         }
 
         internal static float GetEditorLoopTimeMs(int frameIndex)
