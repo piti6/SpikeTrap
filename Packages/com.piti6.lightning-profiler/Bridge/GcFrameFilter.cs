@@ -116,8 +116,11 @@ namespace LightningProfiler
         bool IsEditorSession()
         {
             int lastFrame = ProfilerDriver.lastFrameIndex;
-            if (m_SessionCheckedFrame == lastFrame)
+            if (ProfilerDriver.GetFramesBelongToSameProfilerSession(m_SessionCheckedFrame, lastFrame))
+            {
+                m_SessionCheckedFrame = lastFrame;
                 return m_IsEditorSession;
+            }
 
             int firstFrame = ProfilerDriver.firstFrameIndex;
             if (firstFrame < 0) return m_IsEditorSession;
