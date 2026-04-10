@@ -24,8 +24,7 @@ namespace LightningProfiler
     {
         readonly HashSet<int> m_MatchedFrames = new HashSet<int>();
         int m_CachedLastFrame = -1;
-        bool m_Dirty;
-        readonly Func<bool> m_IsEditorSession;
+        bool m_Dirty = true;
 
         /// <summary>Direct access to the matched frames set for subclass optimization.</summary>
         protected HashSet<int> MatchedFramesSet => m_MatchedFrames;
@@ -35,15 +34,6 @@ namespace LightningProfiler
         protected bool IsDirty => m_Dirty;
         /// <summary>Clear the dirty flag without rescanning.</summary>
         protected void ClearDirty() => m_Dirty = false;
-
-        /// <param name="isEditorSession">
-        /// Optional delegate returning whether the profiling session is an editor session.
-        /// Used by the default <see cref="TestFrame"/> to build <see cref="FrameDataContext"/>.
-        /// </param>
-        protected FrameFilterBase(Func<bool> isEditorSession = null)
-        {
-            m_IsEditorSession = isEditorSession ?? (() => true);
-        }
 
         // ─── Required (implement these) ─────────────────────────────────────
 

@@ -1,4 +1,4 @@
-using System;
+using LightningProfiler.Runtime;
 using UnityEditor;
 using UnityEditor.Profiling;
 using UnityEditorInternal;
@@ -13,19 +13,19 @@ namespace LightningProfiler
     {
         const string k_EditorPrefsKey = "LightningProfiler.GcFilterThresholdKB";
         const string k_UnitKey = "LightningProfiler.GcUnit";
+        
+        bool m_IsEditorSession = true;
+        int m_SessionCheckedFrame = -1;
 
         float m_ThresholdKB;
         float m_PrevThresholdKB;
-        readonly Func<bool> m_IsEditorSession;
 
         enum SizeUnit { KB, MB }
         static readonly string[] k_SizeUnitLabels = { "KB", "MB" };
         SizeUnit m_Unit;
 
-        public GcFrameFilter(Func<bool> isEditorSession)
-            : base(isEditorSession)
+        public GcFrameFilter()
         {
-            m_IsEditorSession = isEditorSession;
             m_ThresholdKB = EditorPrefs.GetFloat(k_EditorPrefsKey, 0f);
             m_PrevThresholdKB = m_ThresholdKB;
             m_Unit = (SizeUnit)EditorPrefs.GetInt(k_UnitKey, 0);
@@ -110,8 +110,30 @@ namespace LightningProfiler
         public override bool FrameMatches(int frameIndex)
         {
             long thresholdBytes = (long)(m_ThresholdKB * 1024f);
-            return FrameGcExceedsThreshold(frameIndex, 0, m_IsEditorSession(), thresholdBytes);
+            return FrameGcExceedsThreshold(frameIndex, 0, IsEditorSession(), thresholdBytes);
         }
+        
+        bool IsEditorSession()
+        {
+            int lastFrame = ProfilerDriver.lastFrameIndex;
+            if (m_SessionCheckedFrame == lastFrame)
+                return m_IsEditorSession;
+
+            int firstFrame = ProfilerDriver.firstFrameIndex;
+            if (firstFrame < 0) return m_IsEditorSession;
+            var view = ProfilerDriver.GetHierarchyFrameDataView(firstFrame, 0, HierarchyFrameDataView.ViewModes.Default, 0, false);
+            if (view != null && view.valid)
+            {
+                var data = view.GetSessionMetaData<byte>(
+                    LightningProfilerSession.SessionGuid,
+                    LightningProfilerSession.SessionInfoTag);
+                if (data.IsCreated && data.Length >= 1)
+                    m_IsEditorSession = data[0] == 1;
+            }
+            m_SessionCheckedFrame = lastFrame;
+            return m_IsEditorSession;
+        }
+
 
         static bool FrameGcExceedsThreshold(int frameIndex, int threadIndex, bool excludeEditorLoop, long thresholdBytes)
         {

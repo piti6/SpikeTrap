@@ -131,13 +131,6 @@ namespace LightningProfiler
         static readonly System.Guid k_SSMetadataGuid = new System.Guid("4389DCEB-F9B3-4D49-940B-E98482F3A3F8");
         const int k_SSInfoTag = -1;
 
-        // Session metadata — cached per profiler session
-        static readonly System.Guid k_SessionGuid = new System.Guid("A17B3C4D-E5F6-4789-ABCD-EF0123456789");
-        const int k_SessionInfoTag = -100;
-        bool m_IsEditorSession = true;
-        int m_SessionCheckedFrame = -1;
-
-
         public CpuUsageBridgeDetailsViewController(ProfilerWindow profilerWindow)
             : base(profilerWindow)
         {
@@ -250,16 +243,14 @@ namespace LightningProfiler
             ProfilerWindow.recordingStateChanged += OnRecordingStateChanged;
 
             // --- Create built-in filters ---
-            m_SpikeFilter = new SpikeFrameFilter(
-                () => IsEditorSession(),
-                threshold =>
+            m_SpikeFilter = new SpikeFrameFilter(threshold =>
                 {
                     var module = ProfilerWindow.selectedModule as FilterableProfilerModule;
                     if (module != null)
                         module.SetChartFilterThreshold(threshold);
                 });
 
-            var gcFilter = new GcFrameFilter(() => IsEditorSession());
+            var gcFilter = new GcFrameFilter();
 
             m_SearchFilter = new SearchFrameFilter(
                 () => m_FrameDataHierarchyView.threadIndex,
@@ -673,25 +664,6 @@ namespace LightningProfiler
                     return true;
             }
             return false;
-        }
-
-        bool IsEditorSession()
-        {
-            int lastFrame = ProfilerDriver.lastFrameIndex;
-            if (m_SessionCheckedFrame == lastFrame)
-                return m_IsEditorSession;
-
-            int firstFrame = ProfilerDriver.firstFrameIndex;
-            if (firstFrame < 0) return m_IsEditorSession;
-            var view = ProfilerDriver.GetHierarchyFrameDataView(firstFrame, 0, HierarchyFrameDataView.ViewModes.Default, 0, false);
-            if (view != null && view.valid)
-            {
-                var data = view.GetSessionMetaData<byte>(k_SessionGuid, k_SessionInfoTag);
-                if (data.IsCreated && data.Length >= 1)
-                    m_IsEditorSession = data[0] == 1;
-            }
-            m_SessionCheckedFrame = lastFrame;
-            return m_IsEditorSession;
         }
 
         void UpdatePauseCallbackSubscription()

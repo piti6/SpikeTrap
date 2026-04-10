@@ -14,22 +14,25 @@ namespace LightningProfiler
     {
         const string k_EditorPrefsKey = "LightningProfiler.ChartFilterThresholdMs";
         const string k_UnitKey = "LightningProfiler.SpikeUnit";
-        
-        const int k_SessionInfoTag = -100;
+
         bool m_IsEditorSession = true;
         int m_SessionCheckedFrame = -1;
 
         float m_ThresholdMs;
         float m_PrevThresholdMs;
-        
+
         readonly Action<float> m_SyncModule;
 
-        enum TimeUnit { ms, s }
+        enum TimeUnit
+        {
+            ms,
+            s
+        }
+
         static readonly string[] k_TimeUnitLabels = { "ms", "s" };
         TimeUnit m_Unit;
 
-        public SpikeFrameFilter(Func<bool> isEditorSession, Action<float> syncModule)
-            : base(isEditorSession)
+        public SpikeFrameFilter(Action<float> syncModule)
         {
             m_SyncModule = syncModule;
             m_ThresholdMs = EditorPrefs.GetFloat(k_EditorPrefsKey, 0f);
@@ -39,9 +42,11 @@ namespace LightningProfiler
 
         public override string DisplayName => "Spike";
         public override Color StripColor => new Color(0.2f, 0.85f, 0.4f, 0.95f);
+
         public override string StripLabel => m_Unit == TimeUnit.s
             ? $">={m_ThresholdMs / 1000f:G3}s"
             : $">={m_ThresholdMs:F0}ms";
+
         public override bool IsActive => m_ThresholdMs > 0f;
 
         public float ThresholdMs => m_ThresholdMs;
@@ -53,9 +58,11 @@ namespace LightningProfiler
         {
             GUILayout.FlexibleSpace();
             GUILayout.Label("Spike", EditorStyles.miniLabel, GUILayout.Width(34));
-            var newDisplayVal = EditorGUILayout.FloatField(DisplayValue, EditorStyles.toolbarTextField, GUILayout.Width(50));
+            var newDisplayVal =
+                EditorGUILayout.FloatField(DisplayValue, EditorStyles.toolbarTextField, GUILayout.Width(50));
 
-            var newUnit = (TimeUnit)EditorGUILayout.Popup((int)m_Unit, k_TimeUnitLabels, EditorStyles.toolbarDropDown, GUILayout.Width(38));
+            var newUnit = (TimeUnit)EditorGUILayout.Popup((int)m_Unit, k_TimeUnitLabels, EditorStyles.toolbarDropDown,
+                GUILayout.Width(38));
             if (newUnit != m_Unit)
             {
                 m_Unit = newUnit;
@@ -71,8 +78,8 @@ namespace LightningProfiler
             SetDirty();
             return true;
         }
-        
-        
+
+
         bool IsEditorSession()
         {
             int lastFrame = ProfilerDriver.lastFrameIndex;
@@ -81,17 +88,21 @@ namespace LightningProfiler
 
             int firstFrame = ProfilerDriver.firstFrameIndex;
             if (firstFrame < 0) return m_IsEditorSession;
-            var view = ProfilerDriver.GetHierarchyFrameDataView(firstFrame, 0, HierarchyFrameDataView.ViewModes.Default, 0, false);
+            var view = ProfilerDriver.GetHierarchyFrameDataView(firstFrame, 0, HierarchyFrameDataView.ViewModes.Default,
+                0, false);
             if (view != null && view.valid)
             {
-                var data = view.GetSessionMetaData<byte>(LightningProfilerSession.SessionGuid, k_SessionInfoTag);
+                var data = view.GetSessionMetaData<byte>(
+                    LightningProfilerSession.SessionGuid,
+                    LightningProfilerSession.SessionInfoTag);
                 if (data.IsCreated && data.Length >= 1)
                     m_IsEditorSession = data[0] == 1;
             }
+
             m_SessionCheckedFrame = lastFrame;
             return m_IsEditorSession;
         }
-        
+
         /// <summary>
         /// Test a single frame by index. Opens a RawFrameDataView, builds a
         /// <see cref="FrameDataContext"/>, and calls <see cref="IsMatch"/>.
@@ -105,6 +116,7 @@ namespace LightningProfiler
                 iter.SetRoot(frameIndex, 0);
                 frameTimeMs = iter.frameTimeMS;
             }
+
             if (IsEditorSession())
                 frameTimeMs -= GetEditorLoopTimeMs(frameIndex);
             return frameTimeMs >= m_ThresholdMs;
@@ -172,6 +184,7 @@ namespace LightningProfiler
                         totalMs += raw.GetSampleTimeMs(i);
                 }
             }
+
             return totalMs;
         }
     }
