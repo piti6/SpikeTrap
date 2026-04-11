@@ -24,6 +24,12 @@ namespace LightningProfiler
             m_Unit = (SizeUnit)EditorPrefs.GetInt(k_UnitKey, 0);
         }
 
+        /// <summary>Test-only constructor. Accepts threshold directly without EditorPrefs.</summary>
+        internal GcFrameFilter(float thresholdKB)
+        {
+            m_ThresholdKB = thresholdKB;
+        }
+
         public override string DisplayName => "GC";
         public override Color StripColor => new Color(0.95f, 0.3f, 0.3f, 0.95f);
         public override string StripLabel => m_Unit == SizeUnit.MB

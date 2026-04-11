@@ -118,6 +118,14 @@ namespace LightningProfiler
 
         void AttachChartOverlay()
         {
+            // EditorStyles throws NRE during domain reload — re-defer until ready
+            try { _ = EditorStyles.toolbar; }
+            catch
+            {
+                EditorApplication.delayCall += AttachChartOverlay;
+                return;
+            }
+
             if (m_IMGUIView == null) return;
 
             var root = m_IMGUIView.panel?.visualTree;
@@ -143,8 +151,7 @@ namespace LightningProfiler
             m_ChartOverlayLabel.pickingMode = PickingMode.Ignore;
             m_ChartOverlay.Add(m_ChartOverlayLabel);
 
-            float toolbarHeight = EditorStyles.toolbar != null ? EditorStyles.toolbar.fixedHeight : 21f;
-            m_ChartOverlay.style.top = toolbarHeight;
+            m_ChartOverlay.style.top = EditorStyles.toolbar.fixedHeight;
 
             m_ChartOverlay.visible = m_SaveMarkedOnly;
             chartContainer.Add(m_ChartOverlay);
@@ -465,6 +472,7 @@ namespace LightningProfiler
                         UnityEngine.Object.DestroyImmediate(m_ScreenshotTexture);
                     m_ScreenshotTexture = tex;
                 }
+                // If no screenshot on this frame, keep showing the last valid one
             }
 
             if (m_ScreenshotTexture == null)
@@ -525,10 +533,24 @@ namespace LightningProfiler
 
         void OnRecordingStateChanged(bool recording)
         {
+            // Clear stale screenshot when a new recording starts
+            if (recording)
+                ClearScreenshotCache();
+
             if (!recording && m_SaveMarkedOnly && m_MarkedFrameTempFiles.Count > 0)
             {
                 EditorApplication.delayCall += SaveMergedMarkedFrames;
             }
+        }
+
+        void ClearScreenshotCache()
+        {
+            if (m_ScreenshotTexture != null)
+            {
+                UnityEngine.Object.DestroyImmediate(m_ScreenshotTexture);
+                m_ScreenshotTexture = null;
+            }
+            m_ScreenshotFrameIndex = -1;
         }
 
         void SaveMergedMarkedFrames()
@@ -639,6 +661,9 @@ namespace LightningProfiler
             float editorLoopMs = 0f;
             var markerIds = new HashSet<int>();
 
+            // Collect newly discovered markers during extraction, notify filters after
+            List<KeyValuePair<int, string>> newMarkers = null;
+
             bool isEditor = IsEditorSession();
 
             using (var raw = ProfilerDriver.GetRawFrameDataView(frameIndex, 0))
@@ -655,13 +680,12 @@ namespace LightningProfiler
                     {
                         int markerId = raw.GetSampleMarkerId(i);
 
-                        // Unique marker IDs (for search filter)
+                        // Collect unique marker IDs; resolve name for new ones
                         if (markerIds.Add(markerId) && m_MarkerNames.TryAdd(markerId, raw.GetSampleName(i)))
                         {
-                            string name = m_MarkerNames[markerId];
-                            // Notify all filters about new marker
-                            foreach (var filter in m_Filters)
-                                filter.OnMarkerDiscovered(markerId, name);
+                            if (newMarkers == null)
+                                newMarkers = new List<KeyValuePair<int, string>>();
+                            newMarkers.Add(new KeyValuePair<int, string>(markerId, m_MarkerNames[markerId]));
                         }
 
                         // EditorLoop time
@@ -673,6 +697,16 @@ namespace LightningProfiler
                             gcBytes += raw.GetSampleMetadataAsLong(i, 0);
                     }
                 }
+            }
+
+            // Notify filters about new markers — outside the native loop, parallelizable
+            if (newMarkers != null && newMarkers.Count > 0)
+            {
+                System.Threading.Tasks.Parallel.ForEach(newMarkers, kvp =>
+                {
+                    foreach (var filter in m_Filters)
+                        filter.OnMarkerDiscovered(kvp.Key, kvp.Value);
+                });
             }
 
             float effectiveMs = isEditor ? frameTimeMs - editorLoopMs : frameTimeMs;
@@ -735,6 +769,9 @@ namespace LightningProfiler
         /// Central update: extract new frames, detect resets, re-evaluate matches.
         /// Called each GUI frame from OnModuleDetailsGUI.
         /// </summary>
+        // Max frames to extract per editor frame — prevents blocking on large file loads
+        const int k_ExtractionBudgetPerFrame = 50;
+
         void UpdateFrameDataCacheAndMatches()
         {
             int curFirst = ProfilerDriver.firstFrameIndex;
@@ -752,9 +789,25 @@ namespace LightningProfiler
 
             int visibleFirst = Mathf.Max(curFirst, curLast + 1 - ProfilerUserSettings.frameCount);
 
-            // Main thread: extract data for uncached frames (ONE pass per frame for ALL filters)
+            // Main thread: extract data for uncached frames, budgeted to avoid blocking
+            bool allExtracted = true;
+            int extracted = 0;
             for (int frame = visibleFirst; frame <= curLast; frame++)
-                GetOrExtractFrameData(frame);
+            {
+                if (!m_FrameDataCache.ContainsKey(frame))
+                {
+                    GetOrExtractFrameData(frame);
+                    if (++extracted >= k_ExtractionBudgetPerFrame)
+                    {
+                        allExtracted = false;
+                        ProfilerWindow.Repaint(); // continue next editor frame
+                        break;
+                    }
+                }
+            }
+
+            // Only evaluate matches once all frames are extracted
+            if (!allExtracted) return;
 
             // Check if any filter parameter changed
             bool anyChanged = m_FiltersDirty;
@@ -800,6 +853,8 @@ namespace LightningProfiler
             m_FiltersDirty = true;
             foreach (var matched in m_FilterMatchedFrames)
                 matched.Clear();
+
+            ClearScreenshotCache();
         }
 
         void TrimFrameDataCache(int firstValidFrame)

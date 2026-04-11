@@ -27,6 +27,12 @@ namespace LightningProfiler
             m_Unit = (TimeUnit)EditorPrefs.GetInt(k_UnitKey, 0);
         }
 
+        /// <summary>Test-only constructor. Accepts threshold directly without EditorPrefs.</summary>
+        internal SpikeFrameFilter(float thresholdMs)
+        {
+            m_ThresholdMs = thresholdMs;
+        }
+
         public override string DisplayName => "Spike";
         public override Color StripColor => new Color(0.2f, 0.85f, 0.4f, 0.95f);
 
