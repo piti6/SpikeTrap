@@ -10,63 +10,6 @@ using UnityEngine.UIElements;
 
 namespace LightningProfiler
 {
-    internal sealed class UnityProfilerWindowControllerAdapter : IProfilerWindowController
-    {
-        readonly ProfilerWindow m_Window;
-
-        public UnityProfilerWindowControllerAdapter(ProfilerWindow window)
-        {
-            m_Window = window ?? throw new ArgumentNullException(nameof(window));
-        }
-
-        public long selectedFrameIndex
-        {
-            get => m_Window.selectedFrameIndex;
-            set => m_Window.selectedFrameIndex = value;
-        }
-
-        public ProfilerModule selectedModule
-        {
-            get => m_Window.selectedModule;
-            set => m_Window.selectedModule = value;
-        }
-
-        public ProfilerModule GetProfilerModuleByType(Type type) => m_Window.GetProfilerModuleByType(type);
-
-        public event Action frameDataViewAboutToBeDisposed
-        {
-            add => m_Window.frameDataViewAboutToBeDisposed += value;
-            remove => m_Window.frameDataViewAboutToBeDisposed -= value;
-        }
-
-        public event Action<int, bool> currentFrameChanged
-        {
-            add => m_Window.currentFrameChanged += value;
-            remove => m_Window.currentFrameChanged -= value;
-        }
-
-        public void SetClearOnPlay(bool enabled) => m_Window.SetClearOnPlay(enabled);
-        public bool GetClearOnPlay() => m_Window.GetClearOnPlay();
-
-        public HierarchyFrameDataView GetFrameDataView(string groupName, string threadName, ulong threadId, HierarchyFrameDataView.ViewModes viewMode, int profilerSortColumn, bool sortAscending)
-            => m_Window.GetFrameDataView(groupName, threadName, threadId, viewMode, profilerSortColumn, sortAscending);
-
-        public HierarchyFrameDataView GetFrameDataView(int threadIndex, HierarchyFrameDataView.ViewModes viewMode, int profilerSortColumn, bool sortAscending)
-            => m_Window.GetFrameDataView(threadIndex, viewMode, profilerSortColumn, sortAscending);
-
-        public bool IsRecording() => m_Window.IsRecording();
-        public bool ProfilerWindowOverheadIsAffectingProfilingRecordingData() => m_Window.ProfilerWindowOverheadIsAffectingProfilingRecordingData();
-
-        public string ConnectedTargetName => m_Window.ConnectedTargetName;
-        public bool ConnectedToEditor => m_Window.ConnectedToEditor;
-
-        public ProfilerProperty CreateProperty() => m_Window.CreateProperty();
-        public ProfilerProperty CreateProperty(int sortType) => m_Window.CreateProperty(sortType);
-
-        public void CloseModule(ProfilerModule module) => m_Window.CloseModule(module);
-        public void Repaint() => m_Window.Repaint();
-    }
-
     public sealed class CpuUsageBridgeDetailsViewController : ProfilerModuleViewController
     {
         const string k_SettingsKeyPrefix = "Profiler.CPUProfilerModule.";
@@ -83,11 +26,27 @@ namespace LightningProfiler
 
         // --- Pluggable filter system ---
         readonly List<IFrameFilter> m_Filters = new List<IFrameFilter>();
+        // Per-filter matched frame sets (managed by controller)
+        readonly List<HashSet<int>> m_FilterMatchedFrames = new List<HashSet<int>>();
         SpikeFrameFilter m_SpikeFilter;
         SearchFrameFilter m_SearchFilter;
         const float k_StripHeight = 20f;
         int m_PrevFirstFrame = -1;
         int m_PrevLastFrame = -1;
+
+        // --- Shared frame data cache (one extraction pass per frame for all filters) ---
+        readonly Dictionary<int, CachedFrameData> m_FrameDataCache = new Dictionary<int, CachedFrameData>();
+        readonly System.Collections.Concurrent.ConcurrentDictionary<int, string> m_MarkerNames =
+            new System.Collections.Concurrent.ConcurrentDictionary<int, string>();
+        const int k_ParallelThreshold = 500;
+        int m_CachedLastFrame = -1;
+        bool m_FiltersDirty = true;
+
+        // Session detection
+        static readonly System.Guid k_SessionGuid = new System.Guid("A17B3C4D-E5F6-4789-ABCD-EF0123456789");
+        const int k_SessionInfoTag = -100;
+        bool m_IsEditorSession = true;
+        int m_SessionCheckedFrame = -1;
 
         static readonly List<Func<IFrameFilter>> s_CustomFilterFactories = new List<Func<IFrameFilter>>();
 
@@ -253,12 +212,15 @@ namespace LightningProfiler
             var gcFilter = new GcFrameFilter();
 
             m_SearchFilter = new SearchFrameFilter(
-                () => m_FrameDataHierarchyView.threadIndex,
                 () => m_FrameDataHierarchyView.DrawSearchBarExternal());
 
             m_Filters.Add(m_SpikeFilter);
             m_Filters.Add(gcFilter);
             m_Filters.Add(m_SearchFilter);
+
+            // Initialize per-filter matched frame sets
+            foreach (var _ in m_Filters)
+                m_FilterMatchedFrames.Add(new HashSet<int>());
 
             // --- Custom user filters ---
             foreach (var factory in s_CustomFilterFactories)
@@ -319,20 +281,8 @@ namespace LightningProfiler
                 return;
             }
 
-            // Detect frame range reset (file loaded or Clear pressed) and invalidate caches
-            int curFirst = ProfilerDriver.firstFrameIndex;
-            int curLast = ProfilerDriver.lastFrameIndex;
-            if (m_PrevFirstFrame >= 0 && (curFirst > m_PrevLastFrame || curLast < m_PrevFirstFrame || curLast < m_PrevLastFrame))
-            {
-                foreach (var filter in m_Filters)
-                    filter.InvalidateCache();
-            }
-            m_PrevFirstFrame = curFirst;
-            m_PrevLastFrame = curLast;
-
-            // Update and draw filter strips
-            foreach (var filter in m_Filters)
-                filter.UpdateMatches();
+            // Update shared frame data cache and matched frames
+            UpdateFrameDataCacheAndMatches();
 
             DrawCombinedHighlightStrip(rect);
 
@@ -636,15 +586,14 @@ namespace LightningProfiler
             int loadedCount = ProfilerDriver.lastFrameIndex - ProfilerDriver.firstFrameIndex + 1;
             ProfilerUserSettings.frameCount = Mathf.Clamp(Mathf.Max(m_DefaultFrameHistoryLength, loadedCount + 10), 1, 2000);
 
-            // Invalidate all filter caches
-            foreach (var filter in m_Filters)
-                filter.InvalidateCache();
+            // Invalidate shared frame data cache
+            InvalidateAllCaches();
             ProfilerWindow.Repaint();
 
             Debug.Log($"[LightningProfiler] Saved {tempFiles.Count} marked frame snapshots to: {savePath}");
         }
 
-        // ─── Filter evaluation ──────────────────────────────────────────────
+        // ─── Shared frame data cache & filter evaluation ────────────────────
 
         bool AnyFilterActive()
         {
@@ -653,17 +602,217 @@ namespace LightningProfiler
             return false;
         }
 
+        bool IsEditorSession()
+        {
+            int lastFrame = ProfilerDriver.lastFrameIndex;
+            if (m_SessionCheckedFrame == lastFrame)
+                return m_IsEditorSession;
+
+            int firstFrame = ProfilerDriver.firstFrameIndex;
+            if (firstFrame < 0) return m_IsEditorSession;
+            var view = ProfilerDriver.GetHierarchyFrameDataView(firstFrame, 0,
+                HierarchyFrameDataView.ViewModes.Default, 0, false);
+            if (view != null && view.valid)
+            {
+                var data = view.GetSessionMetaData<byte>(k_SessionGuid, k_SessionInfoTag);
+                if (data.IsCreated && data.Length >= 1)
+                    m_IsEditorSession = data[0] == 1;
+            }
+            m_SessionCheckedFrame = lastFrame;
+            return m_IsEditorSession;
+        }
+
+        /// <summary>
+        /// Extract all filter-relevant data from a single frame in ONE pass.
+        /// One GetRawFrameDataView + one sample iteration for all filters.
+        /// </summary>
+        CachedFrameData ExtractFrameData(int frameIndex)
+        {
+            float frameTimeMs;
+            using (var iter = new ProfilerFrameDataIterator())
+            {
+                iter.SetRoot(frameIndex, 0);
+                frameTimeMs = iter.frameTimeMS;
+            }
+
+            long gcBytes = 0;
+            float editorLoopMs = 0f;
+            var markerIds = new HashSet<int>();
+
+            bool isEditor = IsEditorSession();
+
+            using (var raw = ProfilerDriver.GetRawFrameDataView(frameIndex, 0))
+            {
+                if (raw != null && raw.valid)
+                {
+                    int gcMarkerId = raw.GetMarkerId("GC.Alloc");
+                    int editorLoopId = isEditor
+                        ? raw.GetMarkerId("EditorLoop")
+                        : FrameDataView.invalidMarkerId;
+                    bool hasEditorLoop = editorLoopId != FrameDataView.invalidMarkerId;
+
+                    for (int i = 0; i < raw.sampleCount; i++)
+                    {
+                        int markerId = raw.GetSampleMarkerId(i);
+
+                        // Unique marker IDs (for search filter)
+                        if (markerIds.Add(markerId) && m_MarkerNames.TryAdd(markerId, raw.GetSampleName(i)))
+                        {
+                            string name = m_MarkerNames[markerId];
+                            // Notify all filters about new marker
+                            foreach (var filter in m_Filters)
+                                filter.OnMarkerDiscovered(markerId, name);
+                        }
+
+                        // EditorLoop time
+                        if (hasEditorLoop && markerId == editorLoopId)
+                            editorLoopMs += raw.GetSampleTimeMs(i);
+
+                        // GC alloc
+                        if (markerId == gcMarkerId && raw.GetSampleMetadataCount(i) > 0)
+                            gcBytes += raw.GetSampleMetadataAsLong(i, 0);
+                    }
+                }
+            }
+
+            float effectiveMs = isEditor ? frameTimeMs - editorLoopMs : frameTimeMs;
+            return new CachedFrameData(frameIndex, effectiveMs, gcBytes, markerIds);
+        }
+
+        CachedFrameData GetOrExtractFrameData(int frameIndex)
+        {
+            if (m_FrameDataCache.TryGetValue(frameIndex, out var cached))
+                return cached;
+            var data = ExtractFrameData(frameIndex);
+            m_FrameDataCache[frameIndex] = data;
+            return data;
+        }
+
+        /// <summary>
+        /// Collect frames matching a filter from the cache, using Parallel.For for large ranges.
+        /// Pure managed, thread-safe.
+        /// </summary>
+        void CollectMatchingFrames(IFrameFilter filter, int fromFrame, int toFrame, HashSet<int> output)
+        {
+            int range = toFrame - fromFrame + 1;
+            if (range >= k_ParallelThreshold)
+            {
+                var results = new System.Collections.Concurrent.ConcurrentBag<int>();
+                var f = filter;
+                System.Threading.Tasks.Parallel.For(fromFrame, toFrame + 1, frame =>
+                {
+                    if (m_FrameDataCache.TryGetValue(frame, out var fd) && f.Matches(in fd))
+                        results.Add(frame);
+                });
+                foreach (var frame in results)
+                    output.Add(frame);
+            }
+            else
+            {
+                for (int frame = fromFrame; frame <= toFrame; frame++)
+                {
+                    if (m_FrameDataCache.TryGetValue(frame, out var data) && filter.Matches(in data))
+                        output.Add(frame);
+                }
+            }
+        }
+
         bool IsFrameMarked(int frameIndex)
         {
             if (!AnyFilterActive())
                 return false;
 
+            var data = GetOrExtractFrameData(frameIndex);
             foreach (var filter in m_Filters)
             {
-                if (filter.IsActive && filter.FrameMatches(frameIndex))
+                if (filter.IsActive && filter.Matches(in data))
                     return true;
             }
             return false;
+        }
+
+        /// <summary>
+        /// Central update: extract new frames, detect resets, re-evaluate matches.
+        /// Called each GUI frame from OnModuleDetailsGUI.
+        /// </summary>
+        void UpdateFrameDataCacheAndMatches()
+        {
+            int curFirst = ProfilerDriver.firstFrameIndex;
+            int curLast = ProfilerDriver.lastFrameIndex;
+            if (curFirst < 0 || curLast < 0) return;
+
+            // Detect frame range reset (file loaded or Clear pressed)
+            if (m_PrevFirstFrame >= 0 &&
+                (curFirst > m_PrevLastFrame || curLast < m_PrevFirstFrame || curLast < m_PrevLastFrame))
+            {
+                InvalidateAllCaches();
+            }
+            m_PrevFirstFrame = curFirst;
+            m_PrevLastFrame = curLast;
+
+            int visibleFirst = Mathf.Max(curFirst, curLast + 1 - ProfilerUserSettings.frameCount);
+
+            // Main thread: extract data for uncached frames (ONE pass per frame for ALL filters)
+            for (int frame = visibleFirst; frame <= curLast; frame++)
+                GetOrExtractFrameData(frame);
+
+            // Check if any filter parameter changed
+            bool anyChanged = m_FiltersDirty;
+
+            if (anyChanged || m_CachedLastFrame != curLast)
+            {
+                for (int i = 0; i < m_Filters.Count; i++)
+                {
+                    var filter = m_Filters[i];
+                    var matched = m_FilterMatchedFrames[i];
+
+                    if (anyChanged)
+                    {
+                        // Full re-evaluation (pure managed, parallel for large ranges)
+                        matched.Clear();
+                        if (filter.IsActive)
+                            CollectMatchingFrames(filter, visibleFirst, curLast, matched);
+                    }
+                    else
+                    {
+                        // Incremental: only check new frames (also parallel if range is large)
+                        int scanFrom = Mathf.Max(curFirst, m_CachedLastFrame + 1);
+                        if (filter.IsActive && scanFrom <= curLast)
+                            CollectMatchingFrames(filter, scanFrom, curLast, matched);
+                        if (matched.Count > 0)
+                            matched.RemoveWhere(f => f < curFirst);
+                    }
+                }
+
+                m_FiltersDirty = false;
+                m_CachedLastFrame = curLast;
+            }
+
+            // Trim old cache entries
+            TrimFrameDataCache(curFirst);
+        }
+
+        void InvalidateAllCaches()
+        {
+            m_FrameDataCache.Clear();
+            m_MarkerNames.Clear();
+            m_CachedLastFrame = -1;
+            m_FiltersDirty = true;
+            foreach (var matched in m_FilterMatchedFrames)
+                matched.Clear();
+        }
+
+        void TrimFrameDataCache(int firstValidFrame)
+        {
+            if (m_FrameDataCache.Count == 0) return;
+            var keysToRemove = new List<int>();
+            foreach (var key in m_FrameDataCache.Keys)
+            {
+                if (key < firstValidFrame)
+                    keysToRemove.Add(key);
+            }
+            foreach (var key in keysToRemove)
+                m_FrameDataCache.Remove(key);
         }
 
         void UpdatePauseCallbackSubscription()
@@ -686,46 +835,28 @@ namespace LightningProfiler
 
         void OnNewProfilerFrame(int connectionId, int frameIndex)
         {
-            // --- Save-marked-only ---
-            if (m_SaveMarkedOnly)
+            bool isMarked = IsFrameMarked(frameIndex);
+
+            if (m_SaveMarkedOnly && isMarked)
             {
-                if (IsFrameMarked(frameIndex))
-                {
-                    string tempDir = System.IO.Path.Combine(Application.temporaryCachePath, "MarkedFrames");
-                    if (!System.IO.Directory.Exists(tempDir))
-                        System.IO.Directory.CreateDirectory(tempDir);
-                    string tempPath = System.IO.Path.Combine(tempDir, $"marked_{frameIndex}.data");
-                    ProfilerDriver.SaveProfile(tempPath);
-                    m_MarkedFrameTempFiles.Add(tempPath);
-                }
-            }
-
-            int checkFrame = frameIndex - 1;
-            if (checkFrame < ProfilerDriver.firstFrameIndex)
-                return;
-
-            bool isPlaying = EditorApplication.isPlaying && !EditorApplication.isPaused;
-
-            // Check if frame matches any active filter
-            bool isMarked = false;
-            foreach (var filter in m_Filters)
-            {
-                if (filter.IsActive && filter.FrameMatches(checkFrame))
-                {
-                    isMarked = true;
-                    break;
-                }
+                string tempDir = System.IO.Path.Combine(Application.temporaryCachePath, "MarkedFrames");
+                if (!System.IO.Directory.Exists(tempDir))
+                    System.IO.Directory.CreateDirectory(tempDir);
+                string tempPath = System.IO.Path.Combine(tempDir, $"marked_{frameIndex}.data");
+                ProfilerDriver.SaveProfile(tempPath);
+                m_MarkedFrameTempFiles.Add(tempPath);
             }
 
             if (isMarked && m_LogOnFilter)
-                LogSpikeFrame(checkFrame);
+                LogSpikeFrame(frameIndex);
 
+            bool isPlaying = EditorApplication.isPlaying && !EditorApplication.isPaused;
             if (!isPlaying)
                 return;
 
             if (isMarked && m_PauseOnFilter)
             {
-                var pauseFrame = checkFrame;
+                var pauseFrame = frameIndex;
 
                 void Pause()
                 {
@@ -741,6 +872,10 @@ namespace LightningProfiler
         void OnSearchChanged(string newSearch)
         {
             m_SearchFilter.SetSearchString(newSearch);
+            // Re-feed all known marker names — thread-safe, parallelizable
+            System.Threading.Tasks.Parallel.ForEach(m_MarkerNames, kvp =>
+                m_SearchFilter.OnMarkerDiscovered(kvp.Key, kvp.Value));
+            m_FiltersDirty = true;
             UpdatePauseCallbackSubscription();
             ProfilerWindow.Repaint();
         }
@@ -766,9 +901,10 @@ namespace LightningProfiler
             bool anyChanged = false;
             const float btnWidth = 15f;
 
-            foreach (var filter in m_Filters)
+            for (int i = 0; i < m_Filters.Count; i++)
             {
-                // Reserve full row, then split at sideWidth using absolute rects
+                var filter = m_Filters[i];
+                var matched = m_FilterMatchedFrames[i];
                 var rowRect = GUILayoutUtility.GetRect(containerRect.width, k_StripHeight);
 
                 // --- Left side: nav buttons + filter controls (clipped to sideWidth) ---
@@ -776,9 +912,9 @@ namespace LightningProfiler
                 var nextRect = new Rect(rowRect.x + btnWidth, rowRect.y, btnWidth, k_StripHeight);
 
                 if (GUI.Button(prevRect, s_PrevFrameIcon, EditorStyles.iconButton))
-                    JumpToMatchedFrame(filter, selectedFrame, -1);
+                    JumpToMatchedFrame(matched, selectedFrame, -1);
                 if (GUI.Button(nextRect, s_NextFrameIcon, EditorStyles.iconButton))
-                    JumpToMatchedFrame(filter, selectedFrame, +1);
+                    JumpToMatchedFrame(matched, selectedFrame, +1);
 
                 // Filter controls clipped to the remaining side area
                 var controlsRect = new Rect(rowRect.x + btnWidth * 2f, rowRect.y,
@@ -801,7 +937,7 @@ namespace LightningProfiler
 
                     EditorGUI.DrawRect(vizRect, new Color(0.18f, 0.18f, 0.18f, 0.9f));
 
-                    foreach (var frame in filter.MatchedFrames)
+                    foreach (var frame in matched)
                     {
                         int rel = frame - firstEmptyFrame;
                         if (rel < 0 || rel >= frameCount) continue;
@@ -816,14 +952,17 @@ namespace LightningProfiler
             }
 
             if (anyChanged)
+            {
+                m_FiltersDirty = true;
                 UpdatePauseCallbackSubscription();
+            }
         }
 
-        void JumpToMatchedFrame(IFrameFilter filter, int currentFrame, int direction)
+        void JumpToMatchedFrame(HashSet<int> matchedFrames, int currentFrame, int direction)
         {
             int bestFrame = -1;
 
-            foreach (var frame in filter.MatchedFrames)
+            foreach (var frame in matchedFrames)
             {
                 if (direction > 0 && frame > currentFrame)
                 {

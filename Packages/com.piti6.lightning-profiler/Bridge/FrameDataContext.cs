@@ -1,26 +1,31 @@
-using UnityEditor.Profiling;
-using UnityEditorInternal;
-using UnityEditorInternal.Profiling;
+using System.Collections.Generic;
 
 namespace LightningProfiler
 {
     /// <summary>
-    /// Pre-fetched frame data passed to <see cref="IFrameFilter.IsMatch"/> so each filter
-    /// does not independently call <c>ProfilerDriver.GetRawFrameDataView</c>.
-    /// The <see cref="RawData"/> view is owned by the caller and must not be stored beyond the call.
+    /// Managed frame data extracted once from native profiler APIs.
+    /// Thread-safe and reusable — no native references.
     /// </summary>
-    public readonly struct FrameDataContext
+    public readonly struct CachedFrameData
     {
-        /// <summary>Index of the frame being evaluated.</summary>
+        /// <summary>Frame index.</summary>
         public readonly int FrameIndex;
 
-        /// <summary>Pre-opened raw frame data view for thread 0. May be null or invalid.</summary>
-        public readonly RawFrameDataView RawData;
+        /// <summary>Effective CPU time in ms (total frame time minus EditorLoop if editor session).</summary>
+        public readonly float EffectiveTimeMs;
 
-        public FrameDataContext(int frameIndex, RawFrameDataView rawData)
+        /// <summary>Total GC.Alloc bytes in the frame (excluding EditorLoop samples if editor session).</summary>
+        public readonly long GcAllocBytes;
+
+        /// <summary>Set of unique profiler marker IDs present in this frame.</summary>
+        public readonly HashSet<int> UniqueMarkerIds;
+
+        public CachedFrameData(int frameIndex, float effectiveTimeMs, long gcAllocBytes, HashSet<int> uniqueMarkerIds)
         {
             FrameIndex = frameIndex;
-            RawData = rawData;
+            EffectiveTimeMs = effectiveTimeMs;
+            GcAllocBytes = gcAllocBytes;
+            UniqueMarkerIds = uniqueMarkerIds;
         }
     }
 }

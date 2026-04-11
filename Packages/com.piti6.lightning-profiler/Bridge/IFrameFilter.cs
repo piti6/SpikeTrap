@@ -7,6 +7,10 @@ namespace LightningProfiler
     /// Defines a pluggable frame filter for the Lightning Profiler.
     /// Implement this interface (or extend <see cref="FrameFilterBase"/>) to create custom filters.
     /// Register via <see cref="CpuUsageBridgeDetailsViewController.RegisterCustomFilterFactory"/>.
+    /// <para>
+    /// Filters receive pre-extracted <see cref="CachedFrameData"/> — no native API access needed.
+    /// The controller handles data extraction, caching, matched-frame tracking, and incremental updates.
+    /// </para>
     /// </summary>
     public interface IFrameFilter
     {
@@ -19,33 +23,26 @@ namespace LightningProfiler
         /// <summary>Label shown on the left side of the strip.</summary>
         string StripLabel { get; }
 
-        /// <summary>Whether this filter has a non-trivial parameter set (threshold > 0, search term non-empty, etc.).</summary>
+        /// <summary>Whether this filter has a non-trivial parameter set.</summary>
         bool IsActive { get; }
-
-        /// <summary>The set of frame indices that currently match this filter.</summary>
-        IReadOnlyCollection<int> MatchedFrames { get; }
 
         /// <summary>
         /// Draw filter-specific toolbar controls (IMGUI).
-        /// Return true if the filter parameter changed this frame (triggers subscription update).
+        /// Return true if the filter parameter changed (triggers matched frames re-evaluation).
         /// </summary>
         bool DrawToolbarControls();
-        
-        /// <summary>
-        /// Test a single frame by index. Opens a RawFrameDataView, builds a
-        /// <see cref="FrameDataContext"/>, and calls <see cref="IsMatch"/>.
-        /// Override for more efficient per-frame checks.
-        /// </summary>
-        bool FrameMatches(int frameIndex);
 
         /// <summary>
-        /// Update the matched-frames cache for the visible frame range.
-        /// Called each GUI frame. Uses incremental scanning when the parameter hasn't changed.
+        /// Test a single frame against this filter using pre-extracted managed data.
+        /// No native API calls — pure managed, thread-safe.
         /// </summary>
-        void UpdateMatches();
+        bool Matches(in CachedFrameData frameData);
 
-        /// <summary>Reset all cached state (matched frames, cached parameters).</summary>
-        void InvalidateCache();
+        /// <summary>
+        /// Called when new marker names are discovered during frame extraction.
+        /// Allows filters (e.g. search) to update their matching marker ID sets.
+        /// </summary>
+        void OnMarkerDiscovered(int markerId, string markerName);
 
         /// <summary>Clean up resources when the filter is removed.</summary>
         void Dispose();

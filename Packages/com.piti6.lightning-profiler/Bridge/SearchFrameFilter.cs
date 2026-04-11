@@ -1,27 +1,24 @@
 using System;
-using System.Collections.Generic;
-using UnityEditor.Profiling;
-using UnityEditorInternal;
+using System.Collections.Concurrent;
 using UnityEngine;
 
 namespace LightningProfiler
 {
     /// <summary>
     /// Filters frames containing a profiler sample whose name matches a search term (case-insensitive).
-    /// Uses marker-ID caching so each unique marker name is checked only once per frame.
+    /// Thread-safe: <see cref="OnMarkerDiscovered"/> and <see cref="Matches"/> can be called from any thread.
     /// </summary>
     public sealed class SearchFrameFilter : FrameFilterBase
     {
-        string m_SearchString;
-        readonly Func<int> m_GetThreadIndex;
+        volatile string m_SearchString;
         readonly Action m_DrawSearchBar;
 
-        // Marker ID → matches search term. Reused across frames while the search term is unchanged.
-        readonly Dictionary<int, bool> m_MarkerMatchCache = new Dictionary<int, bool>();
+        // Thread-safe sets using ConcurrentDictionary as ConcurrentHashSet
+        readonly ConcurrentDictionary<int, byte> m_MatchingMarkerIds = new ConcurrentDictionary<int, byte>();
+        readonly ConcurrentDictionary<int, byte> m_CheckedMarkerIds = new ConcurrentDictionary<int, byte>();
 
-        public SearchFrameFilter(Func<int> getThreadIndex, Action drawSearchBar)
+        public SearchFrameFilter(Action drawSearchBar)
         {
-            m_GetThreadIndex = getThreadIndex;
             m_DrawSearchBar = drawSearchBar;
         }
 
@@ -30,12 +27,11 @@ namespace LightningProfiler
         public override string StripLabel => string.IsNullOrEmpty(m_SearchString) ? "search" : m_SearchString;
         public override bool IsActive => !string.IsNullOrEmpty(m_SearchString);
 
-        /// <summary>Called when the hierarchy view's search bar changes.</summary>
         public void SetSearchString(string search)
         {
             m_SearchString = search;
-            m_MarkerMatchCache.Clear();
-            InvalidateCache();
+            m_MatchingMarkerIds.Clear();
+            m_CheckedMarkerIds.Clear();
         }
 
         public override bool DrawToolbarControls()
@@ -44,41 +40,36 @@ namespace LightningProfiler
             return false;
         }
 
-        public override bool FrameMatches(int frameIndex)
+        /// <summary>
+        /// Thread-safe matching. Checks if any marker in the frame is in the matching set.
+        /// </summary>
+        public override bool Matches(in CachedFrameData frameData)
         {
-            if (string.IsNullOrEmpty(m_SearchString)) return false;
-            
-            int threadIndex = m_GetThreadIndex();
-            if (threadIndex < 0) threadIndex = 0;
-            using (var raw = ProfilerDriver.GetRawFrameDataView(frameIndex, threadIndex))
-            {
-                if (raw == null || !raw.valid)
-                    return false;
-                return RawDataContainsSearch(raw, m_SearchString, m_MarkerMatchCache);
-            }
-        }
+            if (m_MatchingMarkerIds.IsEmpty) return false;
+            if (frameData.UniqueMarkerIds == null) return false;
 
-        static bool RawDataContainsSearch(RawFrameDataView raw, string search, Dictionary<int, bool> markerCache)
-        {
-            for (int i = 1; i < raw.sampleCount; i++)
+            foreach (var id in frameData.UniqueMarkerIds)
             {
-                int markerId = raw.GetSampleMarkerId(i);
-                if (!markerCache.TryGetValue(markerId, out bool matches))
-                {
-                    var name = raw.GetSampleName(i);
-                    matches = name.IndexOf(search, StringComparison.OrdinalIgnoreCase) >= 0;
-                    markerCache[markerId] = matches;
-                }
-                if (matches)
+                if (m_MatchingMarkerIds.ContainsKey(id))
                     return true;
             }
             return false;
         }
 
-        public override void InvalidateCache()
+        /// <summary>
+        /// Thread-safe marker discovery. Can be called from any thread.
+        /// Uses ConcurrentDictionary.TryAdd for atomic check-and-insert.
+        /// </summary>
+        public override void OnMarkerDiscovered(int markerId, string markerName)
         {
-            m_MarkerMatchCache.Clear();
-            base.InvalidateCache();
+            if (!m_CheckedMarkerIds.TryAdd(markerId, 0))
+                return; // already checked
+
+            if (!string.IsNullOrEmpty(m_SearchString) &&
+                markerName.IndexOf(m_SearchString, StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                m_MatchingMarkerIds.TryAdd(markerId, 0);
+            }
         }
     }
 }
