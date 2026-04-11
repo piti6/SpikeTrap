@@ -18,9 +18,9 @@ namespace LightningProfiler
         public readonly long GcAllocBytes;
 
         /// <summary>Set of unique profiler marker IDs present in this frame.</summary>
-        public readonly HashSet<int> UniqueMarkerIds;
+        public readonly IReadOnlyCollection<int> UniqueMarkerIds;
 
-        public CachedFrameData(int frameIndex, float effectiveTimeMs, long gcAllocBytes, HashSet<int> uniqueMarkerIds)
+        public CachedFrameData(int frameIndex, float effectiveTimeMs, long gcAllocBytes, IReadOnlyCollection<int> uniqueMarkerIds)
         {
             FrameIndex = frameIndex;
             EffectiveTimeMs = effectiveTimeMs;

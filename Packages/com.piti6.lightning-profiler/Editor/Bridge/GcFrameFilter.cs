@@ -31,10 +31,7 @@ namespace LightningProfiler
         }
 
         public override string DisplayName => "GC";
-        public override Color StripColor => new Color(0.95f, 0.3f, 0.3f, 0.95f);
-        public override string StripLabel => m_Unit == SizeUnit.MB
-            ? $">={m_ThresholdKB / 1024f:G3}MB"
-            : $">={m_ThresholdKB:F0}KB";
+        public override Color HighlightColor => new Color(0.95f, 0.3f, 0.3f, 0.95f);
         public override bool IsActive => m_ThresholdKB > 0f;
 
         float DisplayValue => m_Unit == SizeUnit.MB ? m_ThresholdKB / 1024f : m_ThresholdKB;
@@ -56,7 +53,7 @@ namespace LightningProfiler
             }
 
             float newKB = Mathf.Max(0f, ToKB(newDisplayVal));
-            if (newKB == m_ThresholdKB) return false;
+            if (Mathf.Approximately(newKB, m_ThresholdKB)) return false;
 
             m_ThresholdKB = newKB;
             EditorPrefs.SetFloat(k_EditorPrefsKey, m_ThresholdKB);
@@ -65,7 +62,8 @@ namespace LightningProfiler
 
         public override bool Matches(in CachedFrameData frameData)
         {
-            return frameData.GcAllocBytes >= (long)(m_ThresholdKB * 1024f);
+            if (m_ThresholdKB <= 0f) return false;
+            return frameData.GcAllocBytes >= (long)(m_ThresholdKB * 1024.0);
         }
     }
 }

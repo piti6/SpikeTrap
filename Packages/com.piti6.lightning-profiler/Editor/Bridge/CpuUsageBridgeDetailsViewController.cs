@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Text;
 using Unity.Profiling.Editor;
@@ -28,19 +29,36 @@ namespace LightningProfiler
         readonly List<IFrameFilter> m_Filters = new List<IFrameFilter>();
         // Per-filter matched frame sets (managed by controller)
         readonly List<HashSet<int>> m_FilterMatchedFrames = new List<HashSet<int>>();
+        // Combined result for All (AND) mode
+        readonly HashSet<int> m_CombinedMatchedFrames = new HashSet<int>();
         SpikeFrameFilter m_SpikeFilter;
         SearchFrameFilter m_SearchFilter;
         const float k_StripHeight = 20f;
+
+        // --- Filter combine mode (All = AND, Any = OR) ---
+        enum FilterCombineMode { Any, All }
+        const string k_FilterCombineModeKey = "LightningProfiler.FilterCombineMode";
+        static readonly string[] k_CombineModeLabels = { "Match any", "Match all" };
+        FilterCombineMode m_CombineMode;
         int m_PrevFirstFrame = -1;
         int m_PrevLastFrame = -1;
 
+        // --- Cached predicate for RemoveWhere to avoid per-frame delegate allocation ---
+        int m_TrimFirstFrame;
+        readonly Predicate<int> m_TrimPredicate;
+        int m_LastTrimFirstFrame = -1;
+
         // --- Shared frame data cache (one extraction pass per frame for all filters) ---
-        readonly Dictionary<int, CachedFrameData> m_FrameDataCache = new Dictionary<int, CachedFrameData>();
+        readonly ConcurrentDictionary<int, CachedFrameData> m_FrameDataCache = new ConcurrentDictionary<int, CachedFrameData>();
         readonly System.Collections.Concurrent.ConcurrentDictionary<int, string> m_MarkerNames =
             new System.Collections.Concurrent.ConcurrentDictionary<int, string>();
         const int k_ParallelThreshold = 500;
         int m_CachedLastFrame = -1;
         bool m_FiltersDirty = true;
+
+        // Cached marker IDs (per session, cleared on InvalidateAllCaches)
+        int m_CachedGcAllocMarkerId = -1;
+        int m_CachedEditorLoopMarkerId = -1;
 
         // Session detection
         static readonly System.Guid k_SessionGuid = new System.Guid("A17B3C4D-E5F6-4789-ABCD-EF0123456789");
@@ -48,7 +66,7 @@ namespace LightningProfiler
         bool m_IsEditorSession = true;
         int m_SessionCheckedFrame = -1;
 
-        static readonly List<Func<IFrameFilter>> s_CustomFilterFactories = new List<Func<IFrameFilter>>();
+        static readonly ConcurrentBag<Func<IFrameFilter>> s_CustomFilterFactories = new ConcurrentBag<Func<IFrameFilter>>();
 
         /// <summary>
         /// Register a factory that creates a custom <see cref="IFrameFilter"/>.
@@ -82,6 +100,7 @@ namespace LightningProfiler
             HierarchyFrameDataView.ViewModes.HideEditorOnlySamples;
 
         // Screenshot preview
+        static GUIStyle s_CollectingOverlayStyle;
         Texture2D m_ScreenshotTexture;
         long m_ScreenshotFrameIndex = -1;
         const float k_ScreenshotMaxHeight = 150f;
@@ -94,6 +113,7 @@ namespace LightningProfiler
             : base(profilerWindow)
         {
             m_ProfilerWindowController = new UnityProfilerWindowControllerAdapter(profilerWindow);
+            m_TrimPredicate = f => f < m_TrimFirstFrame;
         }
 
         public static ProfilerModuleViewController CreateDetailsViewController(ProfilerWindow profilerWindow)
@@ -118,6 +138,8 @@ namespace LightningProfiler
 
         void AttachChartOverlay()
         {
+            if (m_ChartOverlay != null) return;
+
             // EditorStyles throws NRE during domain reload — re-defer until ready
             try { _ = EditorStyles.toolbar; }
             catch
@@ -225,10 +247,6 @@ namespace LightningProfiler
             m_Filters.Add(gcFilter);
             m_Filters.Add(m_SearchFilter);
 
-            // Initialize per-filter matched frame sets
-            foreach (var _ in m_Filters)
-                m_FilterMatchedFrames.Add(new HashSet<int>());
-
             // --- Custom user filters ---
             foreach (var factory in s_CustomFilterFactories)
             {
@@ -237,8 +255,13 @@ namespace LightningProfiler
                     m_Filters.Add(filter);
             }
 
+            // Initialize per-filter matched frame sets (AFTER all filters including custom)
+            foreach (var _ in m_Filters)
+                m_FilterMatchedFrames.Add(new HashSet<int>());
+
             m_PauseOnFilter = EditorPrefs.GetBool(k_PauseOnFilterKey, false);
             m_LogOnFilter = EditorPrefs.GetBool(k_LogOnFilterKey, false);
+            m_CombineMode = (FilterCombineMode)EditorPrefs.GetInt(k_FilterCombineModeKey, 0);
             m_SaveMarkedOnly = EditorPrefs.GetBool(k_SaveMarkedOnlyKey, false);
             if (m_SaveMarkedOnly)
             {
@@ -268,6 +291,7 @@ namespace LightningProfiler
         void DrawDetailsViewViaLegacyIMGUIMethods()
         {
             var detailsViewContainer = ProfilerWindow.DetailsViewContainer;
+            if (detailsViewContainer == null) return;
             var rs = detailsViewContainer.resolvedStyle;
             var rect = new Rect(0f, 0f, rs.width, rs.height);
             rect.yMin += EditorStyles.contentToolbar.CalcHeight(GUIContent.none, 10f);
@@ -318,18 +342,21 @@ namespace LightningProfiler
             var overlayRect = GUILayoutUtility.GetRect(0f, 0f, GUILayout.ExpandWidth(true), GUILayout.ExpandHeight(true));
             EditorGUI.DrawRect(overlayRect, new Color(0.15f, 0.15f, 0.15f, 0.85f));
 
-            var style = new GUIStyle(EditorStyles.boldLabel)
+            if (s_CollectingOverlayStyle == null)
             {
-                alignment = TextAnchor.MiddleCenter,
-                fontSize = 18,
-                normal = { textColor = new Color(1f, 1f, 1f, 0.6f) }
-            };
+                s_CollectingOverlayStyle = new GUIStyle(EditorStyles.boldLabel)
+                {
+                    alignment = TextAnchor.MiddleCenter,
+                    fontSize = 18,
+                    normal = { textColor = new Color(1f, 1f, 1f, 0.6f) }
+                };
+            }
 
             int count = m_MarkedFrameTempFiles.Count;
             string text = count > 0
                 ? $"Collecting...  ({count} frames captured)"
                 : "Collecting...";
-            GUI.Label(overlayRect, text, style);
+            GUI.Label(overlayRect, text, s_CollectingOverlayStyle);
 
             ProfilerWindow.Repaint();
         }
@@ -380,13 +407,23 @@ namespace LightningProfiler
         {
             EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
 
+            // --- Filter combine mode (Any / All) ---
+            var newMode = (FilterCombineMode)EditorGUILayout.Popup((int)m_CombineMode, k_CombineModeLabels,
+                EditorStyles.toolbarDropDown, GUILayout.Width(85));
+            if (newMode != m_CombineMode)
+            {
+                m_CombineMode = newMode;
+                EditorPrefs.SetInt(k_FilterCombineModeKey, (int)m_CombineMode);
+                m_FiltersDirty = true;
+            }
+
             // --- Unified Pause / Log ---
             {
                 bool anyActive = AnyFilterActive();
                 using (new EditorGUI.DisabledScope(!anyActive))
                 {
                     var newPause = GUILayout.Toggle(m_PauseOnFilter,
-                        EditorGUIUtility.TrTextContent("Pause", "Pause play mode when any active filter matches a frame."),
+                        EditorGUIUtility.TrTextContent("Pause on match", "Pause play mode when filters match a frame."),
                         EditorStyles.toolbarButton);
                     if (newPause != m_PauseOnFilter)
                     {
@@ -396,7 +433,7 @@ namespace LightningProfiler
                     }
 
                     var newLog = GUILayout.Toggle(m_LogOnFilter,
-                        EditorGUIUtility.TrTextContent("Log", "Log frame details when any active filter matches."),
+                        EditorGUIUtility.TrTextContent("Log on match", "Log frame details when filters match."),
                         EditorStyles.toolbarButton);
                     if (newLog != m_LogOnFilter)
                     {
@@ -496,7 +533,7 @@ namespace LightningProfiler
 
         Texture2D LoadScreenshotFromFrame(int frameIdx)
         {
-            var view = ProfilerDriver.GetHierarchyFrameDataView(frameIdx, 0, HierarchyFrameDataView.ViewModes.Default, 0, false);
+            using var view = ProfilerDriver.GetHierarchyFrameDataView(frameIdx, 0, HierarchyFrameDataView.ViewModes.Default, 0, false);
             if (view == null || !view.valid)
                 return null;
 
@@ -516,15 +553,23 @@ namespace LightningProfiler
                 return null;
 
             var tex = new Texture2D(width, height, texFormat, false);
-            if (isRaw)
+            try
             {
-                tex.LoadRawTextureData(imgBytes);
-                tex.Apply();
+                if (isRaw)
+                {
+                    tex.LoadRawTextureData(imgBytes);
+                    tex.Apply();
+                }
+                else
+                {
+                    tex.LoadImage(imgBytes.ToArray());
+                    tex.Apply();
+                }
             }
-            else
+            catch
             {
-                tex.LoadImage(imgBytes.ToArray());
-                tex.Apply();
+                UnityEngine.Object.DestroyImmediate(tex);
+                return null;
             }
             return tex;
         }
@@ -632,7 +677,7 @@ namespace LightningProfiler
 
             int firstFrame = ProfilerDriver.firstFrameIndex;
             if (firstFrame < 0) return m_IsEditorSession;
-            var view = ProfilerDriver.GetHierarchyFrameDataView(firstFrame, 0,
+            using var view = ProfilerDriver.GetHierarchyFrameDataView(firstFrame, 0,
                 HierarchyFrameDataView.ViewModes.Default, 0, false);
             if (view != null && view.valid)
             {
@@ -670,9 +715,14 @@ namespace LightningProfiler
             {
                 if (raw != null && raw.valid)
                 {
-                    int gcMarkerId = raw.GetMarkerId("GC.Alloc");
+                    if (m_CachedGcAllocMarkerId == -1)
+                        m_CachedGcAllocMarkerId = raw.GetMarkerId("GC.Alloc");
+                    int gcMarkerId = m_CachedGcAllocMarkerId;
+
+                    if (isEditor && m_CachedEditorLoopMarkerId == -1)
+                        m_CachedEditorLoopMarkerId = raw.GetMarkerId("EditorLoop");
                     int editorLoopId = isEditor
-                        ? raw.GetMarkerId("EditorLoop")
+                        ? m_CachedEditorLoopMarkerId
                         : FrameDataView.invalidMarkerId;
                     bool hasEditorLoop = editorLoopId != FrameDataView.invalidMarkerId;
 
@@ -699,14 +749,11 @@ namespace LightningProfiler
                 }
             }
 
-            // Notify filters about new markers — outside the native loop, parallelizable
+            // Notify search filter about new markers — parallelizable, thread-safe
             if (newMarkers != null && newMarkers.Count > 0)
             {
                 System.Threading.Tasks.Parallel.ForEach(newMarkers, kvp =>
-                {
-                    foreach (var filter in m_Filters)
-                        filter.OnMarkerDiscovered(kvp.Key, kvp.Value);
-                });
+                    m_SearchFilter.OnMarkerDiscovered(kvp.Key, kvp.Value));
             }
 
             float effectiveMs = isEditor ? frameTimeMs - editorLoopMs : frameTimeMs;
@@ -715,11 +762,7 @@ namespace LightningProfiler
 
         CachedFrameData GetOrExtractFrameData(int frameIndex)
         {
-            if (m_FrameDataCache.TryGetValue(frameIndex, out var cached))
-                return cached;
-            var data = ExtractFrameData(frameIndex);
-            m_FrameDataCache[frameIndex] = data;
-            return data;
+            return m_FrameDataCache.GetOrAdd(frameIndex, ExtractFrameData);
         }
 
         /// <summary>
@@ -751,18 +794,40 @@ namespace LightningProfiler
             }
         }
 
-        bool IsFrameMarked(int frameIndex)
+        bool IsFrameMatched(int frameIndex)
         {
             if (!AnyFilterActive())
                 return false;
 
             var data = GetOrExtractFrameData(frameIndex);
-            foreach (var filter in m_Filters)
+            return EvaluateFilters(in data);
+        }
+
+        /// <summary>
+        /// Evaluate all active filters against a frame using the current combine mode.
+        /// Any = OR (at least one matches). All = AND (all active must match).
+        /// Inactive filters are skipped (treated as "don't care").
+        /// </summary>
+        bool EvaluateFilters(in CachedFrameData data)
+        {
+            if (m_CombineMode == FilterCombineMode.All)
             {
-                if (filter.IsActive && filter.Matches(in data))
-                    return true;
+                foreach (var filter in m_Filters)
+                {
+                    if (filter.IsActive && !filter.Matches(in data))
+                        return false;
+                }
+                return true;
             }
-            return false;
+            else
+            {
+                foreach (var filter in m_Filters)
+                {
+                    if (filter.IsActive && filter.Matches(in data))
+                        return true;
+                }
+                return false;
+            }
         }
 
         /// <summary>
@@ -828,12 +893,53 @@ namespace LightningProfiler
                     }
                     else
                     {
-                        // Incremental: only check new frames (also parallel if range is large)
-                        int scanFrom = Mathf.Max(curFirst, m_CachedLastFrame + 1);
-                        if (filter.IsActive && scanFrom <= curLast)
-                            CollectMatchingFrames(filter, scanFrom, curLast, matched);
-                        if (matched.Count > 0)
-                            matched.RemoveWhere(f => f < curFirst);
+                        if (!filter.IsActive)
+                        {
+                            // Filter was deactivated — clear stale matches entirely
+                            matched.Clear();
+                        }
+                        else
+                        {
+                            // Incremental: only check new frames (also parallel if range is large)
+                            int scanFrom = Mathf.Max(curFirst, m_CachedLastFrame + 1);
+                            if (scanFrom <= curLast)
+                                CollectMatchingFrames(filter, scanFrom, curLast, matched);
+                            if (matched.Count > 0)
+                            {
+                                m_TrimFirstFrame = curFirst;
+                                matched.RemoveWhere(m_TrimPredicate);
+                            }
+                        }
+                    }
+                }
+
+                // Compute combined result strip
+                m_CombinedMatchedFrames.Clear();
+                if (m_CombineMode == FilterCombineMode.All)
+                {
+                    // AND: intersect all active filter matched sets
+                    bool first = true;
+                    for (int i = 0; i < m_Filters.Count; i++)
+                    {
+                        if (!m_Filters[i].IsActive) continue;
+                        if (first)
+                        {
+                            m_CombinedMatchedFrames.UnionWith(m_FilterMatchedFrames[i]);
+                            first = false;
+                        }
+                        else
+                        {
+                            m_CombinedMatchedFrames.IntersectWith(m_FilterMatchedFrames[i]);
+                        }
+                    }
+                }
+                else
+                {
+                    // OR: union all active filter matched sets
+                    for (int i = 0; i < m_Filters.Count; i++)
+                    {
+                        if (m_Filters[i].IsActive)
+                            m_CombinedMatchedFrames.UnionWith(m_FilterMatchedFrames[i]);
                     }
                 }
 
@@ -850,24 +956,30 @@ namespace LightningProfiler
             m_FrameDataCache.Clear();
             m_MarkerNames.Clear();
             m_CachedLastFrame = -1;
+            m_LastTrimFirstFrame = -1;
+            m_CachedGcAllocMarkerId = -1;
+            m_CachedEditorLoopMarkerId = -1;
             m_FiltersDirty = true;
             foreach (var matched in m_FilterMatchedFrames)
                 matched.Clear();
+            m_CombinedMatchedFrames.Clear();
+            foreach (var filter in m_Filters)
+                filter.InvalidateCache();
 
             ClearScreenshotCache();
         }
 
         void TrimFrameDataCache(int firstValidFrame)
         {
-            if (m_FrameDataCache.Count == 0) return;
-            var keysToRemove = new List<int>();
+            if (firstValidFrame == m_LastTrimFirstFrame) return;
+            m_LastTrimFirstFrame = firstValidFrame;
+
+            if (m_FrameDataCache.IsEmpty) return;
             foreach (var key in m_FrameDataCache.Keys)
             {
                 if (key < firstValidFrame)
-                    keysToRemove.Add(key);
+                    m_FrameDataCache.TryRemove(key, out _);
             }
-            foreach (var key in keysToRemove)
-                m_FrameDataCache.Remove(key);
         }
 
         void UpdatePauseCallbackSubscription()
@@ -890,7 +1002,7 @@ namespace LightningProfiler
 
         void OnNewProfilerFrame(int connectionId, int frameIndex)
         {
-            bool isMarked = IsFrameMarked(frameIndex);
+            bool isMarked = IsFrameMatched(frameIndex);
 
             if (m_SaveMarkedOnly && isMarked)
             {
@@ -903,7 +1015,7 @@ namespace LightningProfiler
             }
 
             if (isMarked && m_LogOnFilter)
-                LogSpikeFrame(frameIndex);
+                LogMatchedFrame(frameIndex);
 
             bool isPlaying = EditorApplication.isPlaying && !EditorApplication.isPaused;
             if (!isPlaying)
@@ -997,7 +1109,7 @@ namespace LightningProfiler
                         int rel = frame - firstEmptyFrame;
                         if (rel < 0 || rel >= frameCount) continue;
                         EditorGUI.DrawRect(new Rect(vizRect.x + rel * frameWidth, vizRect.y,
-                            Mathf.Max(1f, frameWidth), k_StripHeight), filter.StripColor);
+                            Mathf.Max(1f, frameWidth), k_StripHeight), filter.HighlightColor);
                     }
 
                     if (selectedRelative >= 0 && selectedRelative < frameCount)
@@ -1010,6 +1122,51 @@ namespace LightningProfiler
             {
                 m_FiltersDirty = true;
                 UpdatePauseCallbackSubscription();
+            }
+
+            // --- Combined result strip (only in All mode with 2+ active filters) ---
+            int activeCount = 0;
+            foreach (var f in m_Filters)
+                if (f.IsActive) activeCount++;
+
+            if (m_CombineMode == FilterCombineMode.All && activeCount >= 2)
+            {
+                var rowRect = GUILayoutUtility.GetRect(containerRect.width, k_StripHeight);
+
+                var prevRect = new Rect(rowRect.x, rowRect.y, btnWidth, k_StripHeight);
+                var nextRect = new Rect(rowRect.x + btnWidth, rowRect.y, btnWidth, k_StripHeight);
+
+                if (GUI.Button(prevRect, s_PrevFrameIcon, EditorStyles.iconButton))
+                    JumpToMatchedFrame(m_CombinedMatchedFrames, selectedFrame, -1);
+                if (GUI.Button(nextRect, s_NextFrameIcon, EditorStyles.iconButton))
+                    JumpToMatchedFrame(m_CombinedMatchedFrames, selectedFrame, +1);
+
+                // Label
+                var labelRect = new Rect(rowRect.x + btnWidth * 2f, rowRect.y,
+                    sideWidth - btnWidth * 2f, k_StripHeight);
+                GUI.Label(labelRect, "Result", EditorStyles.miniBoldLabel);
+
+                var vizRect = new Rect(rowRect.x + sideWidth, rowRect.y,
+                    rowRect.width - sideWidth, k_StripHeight);
+
+                if (Event.current.type == EventType.Repaint && vizRect.width > 0f)
+                {
+                    float frameWidth = vizRect.width / frameCount;
+                    EditorGUI.DrawRect(vizRect, new Color(0.14f, 0.14f, 0.14f, 0.95f));
+
+                    var resultColor = new Color(1f, 1f, 1f, 0.9f);
+                    foreach (var frame in m_CombinedMatchedFrames)
+                    {
+                        int rel = frame - firstEmptyFrame;
+                        if (rel < 0 || rel >= frameCount) continue;
+                        EditorGUI.DrawRect(new Rect(vizRect.x + rel * frameWidth, vizRect.y,
+                            Mathf.Max(1f, frameWidth), k_StripHeight), resultColor);
+                    }
+
+                    if (selectedRelative >= 0 && selectedRelative < frameCount)
+                        EditorGUI.DrawRect(new Rect(vizRect.x + selectedRelative * frameWidth, vizRect.y,
+                            Mathf.Max(2f, frameWidth), k_StripHeight), new Color(1f, 0.9f, 0.2f, 0.9f));
+                }
             }
         }
 
@@ -1037,7 +1194,7 @@ namespace LightningProfiler
 
         // ─── Logging ────────────────────────────────────────────────────────
 
-        void LogSpikeFrame(int frameIndex)
+        void LogMatchedFrame(int frameIndex)
         {
             double now = EditorApplication.timeSinceStartup;
             if (now - m_LastSpikeLogTime < k_SpikeLogCooldownSeconds)

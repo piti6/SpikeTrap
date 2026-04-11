@@ -8,7 +8,7 @@ namespace LightningProfiler
     /// <b>Custom filter authors</b> — implement only:
     /// <list type="bullet">
     ///   <item><see cref="DisplayName"/> — filter name</item>
-    ///   <item><see cref="StripColor"/> — highlight strip color</item>
+    ///   <item><see cref="HighlightColor"/> — highlight strip color</item>
     ///   <item><see cref="IsActive"/> — whether the filter is configured</item>
     ///   <item><see cref="Matches"/> — pure managed matching on <see cref="CachedFrameData"/></item>
     /// </list>
@@ -20,15 +20,14 @@ namespace LightningProfiler
         // ─── Required (implement these) ─────────────────────────────────────
 
         public abstract string DisplayName { get; }
-        public abstract Color StripColor { get; }
+        public abstract Color HighlightColor { get; }
         public abstract bool IsActive { get; }
         public abstract bool Matches(in CachedFrameData frameData);
 
         // ─── Optional (override if needed) ──────────────────────────────────
 
-        public virtual string StripLabel => DisplayName;
         public virtual bool DrawToolbarControls() => false;
-        public virtual void OnMarkerDiscovered(int markerId, string markerName) { }
+        public virtual void InvalidateCache() { }
         public virtual void Dispose() { }
     }
 }

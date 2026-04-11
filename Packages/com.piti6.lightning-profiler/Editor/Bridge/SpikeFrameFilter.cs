@@ -34,12 +34,7 @@ namespace LightningProfiler
         }
 
         public override string DisplayName => "Spike";
-        public override Color StripColor => new Color(0.2f, 0.85f, 0.4f, 0.95f);
-
-        public override string StripLabel => m_Unit == TimeUnit.s
-            ? $">={m_ThresholdMs / 1000f:G3}s"
-            : $">={m_ThresholdMs:F0}ms";
-
+        public override Color HighlightColor => new Color(0.2f, 0.85f, 0.4f, 0.95f);
         public override bool IsActive => m_ThresholdMs > 0f;
         public float ThresholdMs => m_ThresholdMs;
 
@@ -62,7 +57,7 @@ namespace LightningProfiler
             }
 
             float newMs = Mathf.Max(0f, ToMs(newDisplayVal));
-            if (newMs == m_ThresholdMs) return false;
+            if (Mathf.Approximately(newMs, m_ThresholdMs)) return false;
 
             m_ThresholdMs = newMs;
             EditorPrefs.SetFloat(k_EditorPrefsKey, m_ThresholdMs);
@@ -72,6 +67,7 @@ namespace LightningProfiler
 
         public override bool Matches(in CachedFrameData frameData)
         {
+            if (m_ThresholdMs <= 0f) return false;
             return frameData.EffectiveTimeMs >= m_ThresholdMs;
         }
     }

@@ -10,12 +10,20 @@ namespace LightningProfiler
     /// </summary>
     public sealed class SearchFrameFilter : FrameFilterBase
     {
-        volatile string m_SearchString;
-        readonly Action m_DrawSearchBar;
+        /// <summary>
+        /// Immutable snapshot of search state. A single volatile reference swap guarantees
+        /// that concurrent readers always see a consistent (search string + dictionaries) tuple.
+        /// </summary>
+        class SearchState
+        {
+            public readonly string SearchString;
+            public readonly ConcurrentDictionary<int, byte> MatchingMarkerIds = new ConcurrentDictionary<int, byte>();
+            public readonly ConcurrentDictionary<int, byte> CheckedMarkerIds = new ConcurrentDictionary<int, byte>();
+            public SearchState(string search) { SearchString = search; }
+        }
 
-        // Thread-safe sets using ConcurrentDictionary as ConcurrentHashSet
-        readonly ConcurrentDictionary<int, byte> m_MatchingMarkerIds = new ConcurrentDictionary<int, byte>();
-        readonly ConcurrentDictionary<int, byte> m_CheckedMarkerIds = new ConcurrentDictionary<int, byte>();
+        volatile SearchState m_State = new SearchState(null);
+        readonly Action m_DrawSearchBar;
 
         public SearchFrameFilter(Action drawSearchBar)
         {
@@ -23,15 +31,14 @@ namespace LightningProfiler
         }
 
         public override string DisplayName => "Search";
-        public override Color StripColor => new Color(1f, 0.75f, 0.1f, 0.95f);
-        public override string StripLabel => string.IsNullOrEmpty(m_SearchString) ? "search" : m_SearchString;
-        public override bool IsActive => !string.IsNullOrEmpty(m_SearchString);
+        public override Color HighlightColor => new Color(1f, 0.75f, 0.1f, 0.95f);
+        public override bool IsActive => !string.IsNullOrEmpty(m_State.SearchString);
 
         public void SetSearchString(string search)
         {
-            m_SearchString = search;
-            m_MatchingMarkerIds.Clear();
-            m_CheckedMarkerIds.Clear();
+            // Single atomic reference swap — concurrent readers see either the old complete
+            // state or the new empty state; never a mix of old string with new dictionaries.
+            m_State = new SearchState(search);
         }
 
         public override bool DrawToolbarControls()
@@ -42,15 +49,17 @@ namespace LightningProfiler
 
         /// <summary>
         /// Thread-safe matching. Checks if any marker in the frame is in the matching set.
+        /// Captures <see cref="m_State"/> once into a local to avoid TOCTOU issues.
         /// </summary>
         public override bool Matches(in CachedFrameData frameData)
         {
-            if (m_MatchingMarkerIds.IsEmpty) return false;
+            var state = m_State;
+            if (state.MatchingMarkerIds.IsEmpty) return false;
             if (frameData.UniqueMarkerIds == null) return false;
 
             foreach (var id in frameData.UniqueMarkerIds)
             {
-                if (m_MatchingMarkerIds.ContainsKey(id))
+                if (state.MatchingMarkerIds.ContainsKey(id))
                     return true;
             }
             return false;
@@ -58,18 +67,29 @@ namespace LightningProfiler
 
         /// <summary>
         /// Thread-safe marker discovery. Can be called from any thread.
+        /// Captures <see cref="m_State"/> once into a local to avoid TOCTOU issues.
         /// Uses ConcurrentDictionary.TryAdd for atomic check-and-insert.
         /// </summary>
-        public override void OnMarkerDiscovered(int markerId, string markerName)
+        public void OnMarkerDiscovered(int markerId, string markerName)
         {
-            if (!m_CheckedMarkerIds.TryAdd(markerId, 0))
+            var state = m_State;
+            if (!state.CheckedMarkerIds.TryAdd(markerId, 0))
                 return; // already checked
 
-            if (!string.IsNullOrEmpty(m_SearchString) &&
-                markerName.IndexOf(m_SearchString, StringComparison.OrdinalIgnoreCase) >= 0)
+            if (!string.IsNullOrEmpty(state.SearchString) && markerName != null &&
+                markerName.IndexOf(state.SearchString, StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                m_MatchingMarkerIds.TryAdd(markerId, 0);
+                state.MatchingMarkerIds.TryAdd(markerId, 0);
             }
+        }
+
+        /// <summary>
+        /// Clears cached marker data while preserving the current search term.
+        /// Called by the controller on session boundaries (file load, clear).
+        /// </summary>
+        public override void InvalidateCache()
+        {
+            m_State = new SearchState(m_State.SearchString);
         }
     }
 }

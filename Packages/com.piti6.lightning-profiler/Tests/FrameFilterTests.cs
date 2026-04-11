@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading.Tasks;
@@ -96,6 +97,17 @@ namespace LightningProfiler.Tests
         {
             var filter = new GcFrameFilter(10f);
             Assert.AreEqual("GC", filter.DisplayName);
+        }
+
+        [Test]
+        public void Matches_ZeroThreshold_ReturnsFalse()
+        {
+            // GcFrameFilter(0f) is IsActive==false, and Matches also returns false
+            // due to the early guard (m_ThresholdKB <= 0f). Safe even if caller forgets IsActive.
+            var filter = new GcFrameFilter(0f);
+            var data = new CachedFrameData(0, 0f, 0, null);
+            Assert.IsFalse(filter.IsActive);
+            Assert.IsFalse(filter.Matches(in data));
         }
     }
 
@@ -284,6 +296,65 @@ namespace LightningProfiler.Tests
             // Should not have thrown. Results may vary (marker might not be discovered yet when read),
             // but no corruption should occur.
             Assert.IsTrue(matchResults.Count > 0);
+
+            // Deterministic end-state check: after the parallel block, marker 2100 ("ConcurrentHit")
+            // must be fully discovered. Verify the filter matches it and rejects non-matching markers.
+            var hitFrame = new CachedFrameData(0, 0f, 0, new HashSet<int> { 2100 });
+            Assert.IsTrue(filter.Matches(in hitFrame), "After concurrent chaos, marker 2100 (ConcurrentHit) must match");
+
+            var missFrame = new CachedFrameData(0, 0f, 0, new HashSet<int> { 101, 103, 105 });
+            Assert.IsFalse(filter.Matches(in missFrame), "Frame with only non-matching markers must not match");
+        }
+
+        [Test]
+        public void SetSearchString_WhileOnMarkerDiscovered_NoCorruption()
+        {
+            var filter = new SearchFrameFilter(() => { });
+            filter.SetSearchString("Alpha");
+
+            // Two threads race: one flips the search string, the other discovers markers.
+            Parallel.Invoke(
+                () =>
+                {
+                    for (int i = 0; i < 1000; i++)
+                    {
+                        string term = i % 2 == 0 ? "Alpha" : "Beta";
+                        filter.SetSearchString(term);
+                    }
+                },
+                () =>
+                {
+                    for (int i = 0; i < 1000; i++)
+                    {
+                        // Alternate between names that match "Alpha" and "Beta"
+                        string name = i % 2 == 0 ? $"AlphaMarker_{i}" : $"BetaMarker_{i}";
+                        filter.OnMarkerDiscovered(i, name);
+                    }
+                }
+            );
+
+            // After both threads finish, the filter must be in a consistent state.
+            // The last SetSearchString wins (iteration 999 writes "Beta").
+            // Re-discover all markers so the current search string evaluates them.
+            string currentSearch = filter.IsActive ? "active" : "inactive";
+            // We cannot know the exact interleaving, but we can re-seed markers and verify consistency.
+            filter.SetSearchString("Beta");
+            for (int i = 0; i < 1000; i++)
+            {
+                string name = i % 2 == 0 ? $"AlphaMarker_{i}" : $"BetaMarker_{i}";
+                filter.OnMarkerDiscovered(i, name);
+            }
+
+            // Now verify: only "Beta*" markers should match
+            for (int i = 0; i < 1000; i++)
+            {
+                var data = new CachedFrameData(0, 0f, 0, new HashSet<int> { i });
+                bool matches = filter.Matches(in data);
+                if (i % 2 == 1) // BetaMarker_N
+                    Assert.IsTrue(matches, $"Marker {i} (BetaMarker) should match search 'Beta'");
+                else // AlphaMarker_N
+                    Assert.IsFalse(matches, $"Marker {i} (AlphaMarker) should not match search 'Beta'");
+            }
         }
     }
 
@@ -320,7 +391,7 @@ namespace LightningProfiler.Tests
             public HighGpuFilter(float threshold) { m_ThresholdMs = threshold; }
 
             public override string DisplayName => "HighGPU";
-            public override Color StripColor => Color.yellow;
+            public override Color HighlightColor => Color.yellow;
             public override bool IsActive => m_ThresholdMs > 0f;
 
             public override bool Matches(in CachedFrameData frameData)
@@ -337,7 +408,6 @@ namespace LightningProfiler.Tests
             IFrameFilter filter = new HighGpuFilter(10f);
             Assert.AreEqual("HighGPU", filter.DisplayName);
             Assert.IsTrue(filter.IsActive);
-            Assert.AreEqual("HighGPU", filter.StripLabel); // defaults to DisplayName
 
             var data = new CachedFrameData(0, 20f, 0, null);
             Assert.IsTrue(filter.Matches(in data));
@@ -354,12 +424,135 @@ namespace LightningProfiler.Tests
         }
 
         [Test]
-        public void CustomFilter_OnMarkerDiscovered_DefaultDoesNothing()
+        public void CustomFilter_DisposeDoesNotThrow()
         {
             var filter = new HighGpuFilter(10f);
             // Should not throw
-            filter.OnMarkerDiscovered(1, "SomeMarker");
             filter.Dispose();
+        }
+    }
+
+    public class EdgeCaseTests
+    {
+        [Test]
+        public void SpikeFilter_NegativeFrameTime_DoesNotMatch()
+        {
+            var filter = new SpikeFrameFilter(10f);
+            var data = new CachedFrameData(0, -5f, 0, null);
+            Assert.IsFalse(filter.Matches(in data));
+        }
+
+        [Test]
+        public void SpikeFilter_ZeroThreshold_MatchesReturnsFalse()
+        {
+            // threshold=0 means IsActive is false, and Matches also returns false
+            // due to the early guard (m_ThresholdMs <= 0f). Safe even if caller forgets IsActive.
+            var filter = new SpikeFrameFilter(0f);
+            var data = new CachedFrameData(0, 0f, 0, null);
+            Assert.IsFalse(filter.IsActive);
+            Assert.IsFalse(filter.Matches(in data));
+        }
+
+        [Test]
+        public void GcFilter_FractionalKBThreshold_512Bytes()
+        {
+            // 0.5 KB = 512 bytes
+            var filter = new GcFrameFilter(0.5f);
+
+            var below = new CachedFrameData(0, 0f, 511, null);
+            Assert.IsFalse(filter.Matches(in below));
+
+            var exact = new CachedFrameData(0, 0f, 512, null);
+            Assert.IsTrue(filter.Matches(in exact));
+        }
+
+        [Test]
+        public void GcFilter_LargeValues_1GB()
+        {
+            // 1 GB = 1048576 KB = 1073741824 bytes
+            var filter = new GcFrameFilter(1048576f);
+            var data = new CachedFrameData(0, 0f, 1073741824L, null);
+            Assert.IsTrue(filter.Matches(in data));
+        }
+
+        [Test]
+        public void SearchFilter_EmptyHashSet_ReturnsFalse()
+        {
+            var filter = new SearchFrameFilter(() => { });
+            filter.SetSearchString("Hit");
+            filter.OnMarkerDiscovered(1, "HitMarker");
+
+            // Frame has an empty marker set (not null) — no marker ID to match against
+            var data = new CachedFrameData(0, 0f, 0, new HashSet<int>());
+            Assert.IsFalse(filter.Matches(in data));
+        }
+
+        [Test]
+        public void SearchFilter_NullMarkerName_DoesNotThrow()
+        {
+            var filter = new SearchFrameFilter(() => { });
+            filter.SetSearchString("Test");
+
+            // Current code may NRE on null markerName — this test documents the gap.
+            Assert.DoesNotThrow(() => filter.OnMarkerDiscovered(1, null));
+        }
+    }
+
+    public class MultiFilterCompositionTests
+    {
+        [Test]
+        public void MultipleFilters_ORSemantics()
+        {
+            // Create filters
+            var spike = new SpikeFrameFilter(30f);
+            var gc = new GcFrameFilter(1f); // 1 KB = 1024 bytes
+            var search = new SearchFrameFilter(() => { });
+            search.SetSearchString("Network");
+            search.OnMarkerDiscovered(1, "NetworkSync");
+            search.OnMarkerDiscovered(99, "PlayerLoop");
+
+            var filters = new IFrameFilter[] { spike, gc, search };
+
+            // Frame A: 5ms, 10240 bytes (10KB), markers={99} (PlayerLoop, no NetworkSync)
+            // GC matches (10240 >= 1024), spike does not (5 < 30), search does not (99 is PlayerLoop)
+            var frameA = new CachedFrameData(0, 5f, 10240, new HashSet<int> { 99 });
+
+            bool anyMatchA = false;
+            bool spikeMatchA = spike.Matches(in frameA);
+            bool gcMatchA = gc.Matches(in frameA);
+            bool searchMatchA = search.Matches(in frameA);
+
+            Assert.IsFalse(spikeMatchA, "Spike should not match frame A (5ms < 30ms)");
+            Assert.IsTrue(gcMatchA, "GC should match frame A (10240 bytes >= 1024 bytes)");
+            Assert.IsFalse(searchMatchA, "Search should not match frame A (marker 99 is PlayerLoop)");
+
+            foreach (var f in filters)
+            {
+                if (f.IsActive && f.Matches(in frameA))
+                {
+                    anyMatchA = true;
+                    break;
+                }
+            }
+            Assert.IsTrue(anyMatchA, "At least one active filter should match frame A (OR semantics)");
+
+            // Frame B: 5ms, 100 bytes, markers={99} (PlayerLoop) — none match
+            var frameB = new CachedFrameData(1, 5f, 100, new HashSet<int> { 99 });
+
+            bool anyMatchB = false;
+            Assert.IsFalse(spike.Matches(in frameB), "Spike should not match frame B");
+            Assert.IsFalse(gc.Matches(in frameB), "GC should not match frame B");
+            Assert.IsFalse(search.Matches(in frameB), "Search should not match frame B");
+
+            foreach (var f in filters)
+            {
+                if (f.IsActive && f.Matches(in frameB))
+                {
+                    anyMatchB = true;
+                    break;
+                }
+            }
+            Assert.IsFalse(anyMatchB, "No active filter should match frame B");
         }
     }
 }

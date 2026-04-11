@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -12,16 +13,13 @@ namespace LightningProfiler
     /// The controller handles data extraction, caching, matched-frame tracking, and incremental updates.
     /// </para>
     /// </summary>
-    public interface IFrameFilter
+    public interface IFrameFilter : IDisposable
     {
         /// <summary>Display name used in logs and tooltips.</summary>
         string DisplayName { get; }
 
         /// <summary>Color used for the highlight strip.</summary>
-        Color StripColor { get; }
-
-        /// <summary>Label shown on the left side of the strip.</summary>
-        string StripLabel { get; }
+        Color HighlightColor { get; }
 
         /// <summary>Whether this filter has a non-trivial parameter set.</summary>
         bool IsActive { get; }
@@ -34,17 +32,13 @@ namespace LightningProfiler
 
         /// <summary>
         /// Test a single frame against this filter using pre-extracted managed data.
-        /// No native API calls — pure managed, thread-safe.
+        /// Must be thread-safe — the controller may call this from background threads via Parallel.For.
         /// </summary>
         bool Matches(in CachedFrameData frameData);
 
         /// <summary>
-        /// Called when new marker names are discovered during frame extraction.
-        /// Allows filters (e.g. search) to update their matching marker ID sets.
+        /// Reset internal state. Called by the controller on session boundaries (file load, clear).
         /// </summary>
-        void OnMarkerDiscovered(int markerId, string markerName);
-
-        /// <summary>Clean up resources when the filter is removed.</summary>
-        void Dispose();
+        void InvalidateCache();
     }
 }
