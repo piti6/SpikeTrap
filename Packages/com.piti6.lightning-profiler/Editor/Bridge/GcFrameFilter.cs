@@ -30,7 +30,6 @@ namespace LightningProfiler
             m_ThresholdKB = thresholdKB;
         }
 
-        public override string DisplayName => "GC";
         public override Color HighlightColor => new Color(0.95f, 0.3f, 0.3f, 0.95f);
         public override bool IsActive => m_ThresholdKB > 0f;
 

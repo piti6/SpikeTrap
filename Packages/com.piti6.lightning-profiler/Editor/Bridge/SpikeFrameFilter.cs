@@ -1,4 +1,4 @@
-using System;
+using System.Linq;
 using UnityEditor;
 using UnityEngine;
 
@@ -10,65 +10,79 @@ namespace LightningProfiler
     /// </summary>
     public sealed class SpikeFrameFilter : FrameFilterBase
     {
-        const string k_EditorPrefsKey = "LightningProfiler.ChartFilterThresholdMs";
-        const string k_UnitKey = "LightningProfiler.SpikeUnit";
-
-        float m_ThresholdMs;
-        readonly Action<float> m_SyncModule;
-
-        enum TimeUnit { ms, s }
-        static readonly string[] k_TimeUnitLabels = { "ms", "s" };
-        TimeUnit m_Unit;
-
-        public SpikeFrameFilter(Action<float> syncModule)
+        private enum TimeUnit
         {
-            m_SyncModule = syncModule;
-            m_ThresholdMs = EditorPrefs.GetFloat(k_EditorPrefsKey, 0f);
-            m_Unit = (TimeUnit)EditorPrefs.GetInt(k_UnitKey, 0);
+            MS,
+            S
+        }
+        
+        private const string EditorPrefsKey = "LightningProfiler.ChartFilterThresholdMs";
+        private const string UnitKey = "LightningProfiler.SpikeUnit";
+
+        private float _thresholdMs;
+        
+        private readonly string[] _timeUnitLabels;
+        private TimeUnit _unit;
+
+        public SpikeFrameFilter()
+        {
+            _timeUnitLabels = System.Enum.GetNames(typeof(TimeUnit))
+                .Select(x => x.ToLower())
+                .ToArray();
+            
+            _thresholdMs = EditorPrefs.GetFloat(EditorPrefsKey, 0f);
+            _unit = (TimeUnit)EditorPrefs.GetInt(UnitKey, 0);
         }
 
         /// <summary>Test-only constructor. Accepts threshold directly without EditorPrefs.</summary>
         internal SpikeFrameFilter(float thresholdMs)
         {
-            m_ThresholdMs = thresholdMs;
+            _thresholdMs = thresholdMs;
         }
 
-        public override string DisplayName => "Spike";
         public override Color HighlightColor => new Color(0.2f, 0.85f, 0.4f, 0.95f);
-        public override bool IsActive => m_ThresholdMs > 0f;
-        public float ThresholdMs => m_ThresholdMs;
+        public override bool IsActive => _thresholdMs > 0f;
+        public float ThresholdMs => _thresholdMs;
 
-        float DisplayValue => m_Unit == TimeUnit.s ? m_ThresholdMs / 1000f : m_ThresholdMs;
-        float ToMs(float displayVal) => m_Unit == TimeUnit.s ? displayVal * 1000f : displayVal;
+        private float ToMs(float displayVal)
+        {
+            return _unit == TimeUnit.S ? displayVal * 1000f : displayVal;
+        }
 
         public override bool DrawToolbarControls()
         {
+            var displayValue = _unit switch
+            {
+                TimeUnit.S => _thresholdMs / 1000f,
+                TimeUnit.MS => _thresholdMs,
+                _ => 0f
+            };
+            
             GUILayout.FlexibleSpace();
             GUILayout.Label("Spike", EditorStyles.miniLabel, GUILayout.Width(34));
             var newDisplayVal =
-                EditorGUILayout.FloatField(DisplayValue, EditorStyles.toolbarTextField, GUILayout.Width(50));
+                EditorGUILayout.FloatField(displayValue, EditorStyles.toolbarTextField, GUILayout.Width(50));
 
-            var newUnit = (TimeUnit)EditorGUILayout.Popup((int)m_Unit, k_TimeUnitLabels,
+            var newUnit = (TimeUnit)EditorGUILayout.Popup((int)_unit, _timeUnitLabels,
                 EditorStyles.toolbarDropDown, GUILayout.Width(38));
-            if (newUnit != m_Unit)
+            if (newUnit != _unit)
             {
-                m_Unit = newUnit;
-                EditorPrefs.SetInt(k_UnitKey, (int)m_Unit);
+                _unit = newUnit;
+                EditorPrefs.SetInt(UnitKey, (int)_unit);
             }
 
             float newMs = Mathf.Max(0f, ToMs(newDisplayVal));
-            if (Mathf.Approximately(newMs, m_ThresholdMs)) return false;
+            if (Mathf.Approximately(newMs, _thresholdMs)) return false;
 
-            m_ThresholdMs = newMs;
-            EditorPrefs.SetFloat(k_EditorPrefsKey, m_ThresholdMs);
-            m_SyncModule?.Invoke(m_ThresholdMs);
+            _thresholdMs = newMs;
+            EditorPrefs.SetFloat(EditorPrefsKey, _thresholdMs);
             return true;
         }
 
         public override bool Matches(in CachedFrameData frameData)
         {
-            if (m_ThresholdMs <= 0f) return false;
-            return frameData.EffectiveTimeMs >= m_ThresholdMs;
+            if (_thresholdMs <= 0f) return false;
+            return frameData.EffectiveTimeMs >= _thresholdMs;
         }
     }
 }

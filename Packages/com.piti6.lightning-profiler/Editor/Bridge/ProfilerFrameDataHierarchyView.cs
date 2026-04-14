@@ -63,7 +63,7 @@ namespace LightningProfiler
 
             static BaseStyles()
             {
-                viewTypeToolbarDropDown.fixedWidth = Chart.kSideWidth;
+                viewTypeToolbarDropDown.fixedWidth = 0;
                 viewTypeToolbarDropDown.stretchWidth = false;
 
                 detailedViewTypeToolbarDropDown.fixedWidth = k_DetailedViewTypeToolbarDropDownWidth;
@@ -82,7 +82,7 @@ namespace LightningProfiler
         public static GUIContent NoFrameDataContent => BaseStyles.noData;
         public static GUIStyle ProfilerDetailsLabelStyle => BaseStyles.label;
 
-        private IProfilerWindowController m_profilerWindow;
+        private UnityProfilerWindowControllerAdapter m_profilerWindow;
 
         [SerializeField]
         private int m_FrameIndex = FrameDataView.invalidOrCurrentFrameIndex;
@@ -138,6 +138,7 @@ namespace LightningProfiler
         readonly string m_serializationPrefKeyPrefix;
         string MultiColumnHeaderStatePrefKey => m_serializationPrefKeyPrefix + "MultiColumnHeaderState";
 
+
         struct ThreadMenuEntry : IComparable<ThreadMenuEntry>
         {
             public int sortKey;
@@ -161,7 +162,12 @@ namespace LightningProfiler
         static readonly GUIContent[] kCPUProfilerViewTypeNames = new GUIContent[]
         {
             EditorGUIUtility.TrTextContent("Hierarchy"),
+            EditorGUIUtility.TrTextContent("Timeline"),
         };
+        static readonly int[] kCPUProfilerViewTypeValues = { 0, 1 };
+
+        public int viewType { get; set; }
+        public event Action<int> viewTypeChanged = delegate { };
         
         public event Action<bool> OnToggleLive = on => { };
         public event Action<string, string, int> userChangedThread = delegate { };
@@ -218,7 +224,7 @@ namespace LightningProfiler
             m_serializationPrefKeyPrefix = serializationPrefKeyPrefix ?? "Profiler.CPUProfilerModule.HierarchyView.";
         }
 
-        public void OnEnable(IProfilerWindowController profilerWindow)
+        public void OnEnable(UnityProfilerWindowControllerAdapter profilerWindow)
         {
             m_profilerWindow = profilerWindow;
             m_profilerWindow.frameDataViewAboutToBeDisposed += OnFrameDataViewAboutToBeDisposed;
@@ -382,6 +388,15 @@ namespace LightningProfiler
             DoGUI(frameDataView, true, ref live, null);
         }
 
+        /// <summary>Draw only the toolbar (view type dropdown, Live, Thread, CPU time). Used in Timeline mode.</summary>
+        public void DrawToolbarOnly(HierarchyFrameDataView frameDataView, bool fetchData, ref bool updateViewLive)
+        {
+            var isDataAvailable = frameDataView != null && frameDataView.valid;
+            if (isDataAvailable && (m_ThreadIndex != frameDataView.threadIndex || m_ThreadName != frameDataView.threadName))
+                SyncThreadStateFromFrameData(frameDataView);
+            DrawHierarchyToolbar(frameDataView, fetchData, ref updateViewLive, null);
+        }
+
         public void DoGUI(HierarchyFrameDataView frameDataView, bool fetchData, ref bool updateViewLive, Action drawOptionsMenu)
         {
             var isSearchAllowed = string.IsNullOrEmpty(treeView.searchString) ||
@@ -448,6 +463,15 @@ namespace LightningProfiler
         void DrawHierarchyToolbar(HierarchyFrameDataView frameDataView, bool fetchData, ref bool updateViewLive, Action drawOptionsMenu)
         {
             EditorGUILayout.BeginHorizontal(BaseStyles.toolbar);
+
+            // View type dropdown (Hierarchy / Timeline) — matches native CPU module position
+            var newViewType = EditorGUILayout.IntPopup(viewType, kCPUProfilerViewTypeNames, kCPUProfilerViewTypeValues,
+                BaseStyles.viewTypeToolbarDropDown);
+            if (newViewType != viewType)
+            {
+                viewType = newViewType;
+                viewTypeChanged.Invoke(viewType);
+            }
 
             DrawLiveUpdateToggleRef(ref updateViewLive);
 

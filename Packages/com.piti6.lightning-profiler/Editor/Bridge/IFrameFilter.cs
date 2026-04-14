@@ -15,9 +15,6 @@ namespace LightningProfiler
     /// </summary>
     public interface IFrameFilter : IDisposable
     {
-        /// <summary>Display name used in logs and tooltips.</summary>
-        string DisplayName { get; }
-
         /// <summary>Color used for the highlight strip.</summary>
         Color HighlightColor { get; }
 

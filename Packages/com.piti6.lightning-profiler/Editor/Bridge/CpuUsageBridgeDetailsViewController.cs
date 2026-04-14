@@ -6,6 +6,7 @@ using Unity.Profiling.Editor;
 using UnityEditor;
 using UnityEditor.Profiling;
 using UnityEditorInternal;
+using UnityEditorInternal.Profiling;
 using UnityEngine;
 using UnityEngine.UIElements;
 
@@ -77,6 +78,13 @@ namespace LightningProfiler
             if (factory == null) throw new ArgumentNullException(nameof(factory));
             s_CustomFilterFactories.Add(factory);
         }
+
+        // --- View mode: Hierarchy / Timeline ---
+        enum DetailsViewMode { Hierarchy, Timeline }
+        const string k_ViewModeKey = "LightningProfiler.DetailsViewMode";
+        static readonly string[] k_ViewModeLabels = { "Hierarchy", "Timeline" };
+        DetailsViewMode m_ViewMode;
+        ProfilerTimelineGUI m_TimelineGUI;
 
         // Unified pause/log on any filter match
         const string k_PauseOnFilterKey = "LightningProfiler.PauseOnFilter";
@@ -204,11 +212,15 @@ namespace LightningProfiler
                     filter.Dispose();
                 m_Filters.Clear();
 
+                m_TimelineGUI?.Clear();
+                m_TimelineGUI = null;
+
                 if (m_FrameDataHierarchyView != null)
                 {
                     m_FrameDataHierarchyView.OnToggleLive -= OnHierarchyLiveToggle;
                     m_FrameDataHierarchyView.userChangedThread -= OnUserChangedThread;
                     m_FrameDataHierarchyView.searchChanged -= OnSearchChanged;
+                    m_FrameDataHierarchyView.viewTypeChanged -= OnViewTypeChanged;
                     m_FrameDataHierarchyView.OnDisable();
                 }
             }
@@ -226,17 +238,14 @@ namespace LightningProfiler
             m_FrameDataHierarchyView.OnToggleLive += OnHierarchyLiveToggle;
             m_FrameDataHierarchyView.userChangedThread += OnUserChangedThread;
             m_FrameDataHierarchyView.searchChanged += OnSearchChanged;
+            m_FrameDataHierarchyView.viewTypeChanged += OnViewTypeChanged;
+            m_FrameDataHierarchyView.viewType = (int)m_ViewMode;
             m_FrameDataHierarchyView.hideSearchBar = true;
 
             ProfilerWindow.recordingStateChanged += OnRecordingStateChanged;
 
             // --- Create built-in filters ---
-            m_SpikeFilter = new SpikeFrameFilter(threshold =>
-                {
-                    var module = ProfilerWindow.selectedModule as FilterableProfilerModule;
-                    if (module != null)
-                        module.SetChartFilterThreshold(threshold);
-                });
+            m_SpikeFilter = new SpikeFrameFilter();
 
             var gcFilter = new GcFrameFilter();
 
@@ -262,6 +271,12 @@ namespace LightningProfiler
             m_PauseOnFilter = EditorPrefs.GetBool(k_PauseOnFilterKey, false);
             m_LogOnFilter = EditorPrefs.GetBool(k_LogOnFilterKey, false);
             m_CombineMode = (FilterCombineMode)EditorPrefs.GetInt(k_FilterCombineModeKey, 0);
+            m_ViewMode = (DetailsViewMode)EditorPrefs.GetInt(k_ViewModeKey, 0);
+
+            // Initialize Unity's internal timeline view, passing the built-in CPU module for flow events
+            m_TimelineGUI = new ProfilerTimelineGUI();
+            var cpuModule = ProfilerWindow.GetProfilerModule<CPUProfilerModule>(UnityEngine.Profiling.ProfilerArea.CPU);
+            m_TimelineGUI.OnEnable(cpuModule, ProfilerWindow, false);
             m_SaveMarkedOnly = EditorPrefs.GetBool(k_SaveMarkedOnlyKey, false);
             if (m_SaveMarkedOnly)
             {
@@ -304,6 +319,10 @@ namespace LightningProfiler
 
             DrawFilterControls();
 
+            // Keep dropdown in sync with controller's persisted view mode
+            if (m_FrameDataHierarchyView.viewType != (int)m_ViewMode)
+                m_FrameDataHierarchyView.viewType = (int)m_ViewMode;
+
             UpdateChartOverlay();
 
             if (m_SaveMarkedOnly)
@@ -315,13 +334,29 @@ namespace LightningProfiler
             // Update shared frame data cache and matched frames
             UpdateFrameDataCacheAndMatches();
 
+            // Filter strips — visible in both modes
             DrawCombinedHighlightStrip(rect);
 
-            // Screenshot preview
-            DrawScreenshotPreview();
-
             var frameData = fetchData ? GetFrameDataViewForHierarchy() : null;
-            m_FrameDataHierarchyView.DoGUI(frameData, fetchData, ref m_UpdateViewLive, null);
+
+            if (m_ViewMode == DetailsViewMode.Timeline && m_TimelineGUI != null)
+            {
+                // Draw the hierarchy toolbar (with view type dropdown) then the timeline below
+                m_FrameDataHierarchyView.DrawToolbarOnly(frameData, fetchData, ref m_UpdateViewLive);
+
+                int frameIndex = (int)ProfilerWindow.selectedFrameIndex;
+                if (frameIndex < 0) frameIndex = ProfilerDriver.lastFrameIndex;
+                // Calculate remaining rect below toolbar for the timeline
+                float toolbarBottom = GUILayoutUtility.GetLastRect().yMax;
+                var timelineRect = new Rect(rect.x, toolbarBottom, rect.width, rect.yMax - toolbarBottom);
+                if (timelineRect.height > 1f)
+                    m_TimelineGUI.DoGUI(frameIndex, timelineRect, fetchData, ref m_UpdateViewLive);
+            }
+            else
+            {
+                DrawScreenshotPreview();
+                m_FrameDataHierarchyView.DoGUI(frameData, fetchData, ref m_UpdateViewLive, null);
+            }
         }
 
         void UpdateChartOverlay()
@@ -707,7 +742,7 @@ namespace LightningProfiler
             var markerIds = new HashSet<int>();
 
             // Collect newly discovered markers during extraction, notify filters after
-            List<KeyValuePair<int, string>> newMarkers = null;
+            List<(int MarkerId, string MarkerName)> newMarkers = null;
 
             bool isEditor = IsEditorSession();
 
@@ -734,8 +769,8 @@ namespace LightningProfiler
                         if (markerIds.Add(markerId) && m_MarkerNames.TryAdd(markerId, raw.GetSampleName(i)))
                         {
                             if (newMarkers == null)
-                                newMarkers = new List<KeyValuePair<int, string>>();
-                            newMarkers.Add(new KeyValuePair<int, string>(markerId, m_MarkerNames[markerId]));
+                                newMarkers = new List<(int MarkerId, string MarkerName)>();
+                            newMarkers.Add((markerId, m_MarkerNames[markerId]));
                         }
 
                         // EditorLoop time
@@ -753,11 +788,11 @@ namespace LightningProfiler
             if (newMarkers != null && newMarkers.Count > 0)
             {
                 System.Threading.Tasks.Parallel.ForEach(newMarkers, kvp =>
-                    m_SearchFilter.OnMarkerDiscovered(kvp.Key, kvp.Value));
+                    m_SearchFilter.OnMarkerDiscovered(kvp.MarkerId, kvp.MarkerName));
             }
 
             float effectiveMs = isEditor ? frameTimeMs - editorLoopMs : frameTimeMs;
-            return new CachedFrameData(frameIndex, effectiveMs, gcBytes, markerIds);
+            return new CachedFrameData(effectiveMs, gcBytes, markerIds);
         }
 
         CachedFrameData GetOrExtractFrameData(int frameIndex)
@@ -810,7 +845,7 @@ namespace LightningProfiler
         /// </summary>
         bool EvaluateFilters(in CachedFrameData data)
         {
-            if (m_CombineMode == FilterCombineMode.All)
+            bool MatchAll(in CachedFrameData data)
             {
                 foreach (var filter in m_Filters)
                 {
@@ -819,7 +854,8 @@ namespace LightningProfiler
                 }
                 return true;
             }
-            else
+            
+            bool MatchAny(in CachedFrameData data)
             {
                 foreach (var filter in m_Filters)
                 {
@@ -828,24 +864,39 @@ namespace LightningProfiler
                 }
                 return false;
             }
+            
+            return m_CombineMode switch
+            {
+                FilterCombineMode.All => MatchAll(data),
+                FilterCombineMode.Any => MatchAny(data),
+                _ => throw new ArgumentOutOfRangeException(nameof(m_CombineMode), m_CombineMode, null)
+            };
         }
 
         /// <summary>
         /// Central update: extract new frames, detect resets, re-evaluate matches.
         /// Called each GUI frame from OnModuleDetailsGUI.
         /// </summary>
-        // Max frames to extract per editor frame — prevents blocking on large file loads
-        const int k_ExtractionBudgetPerFrame = 50;
-
         void UpdateFrameDataCacheAndMatches()
         {
             int curFirst = ProfilerDriver.firstFrameIndex;
             int curLast = ProfilerDriver.lastFrameIndex;
-            if (curFirst < 0 || curLast < 0) return;
+            if (curFirst < 0 || curLast < 0)
+            {
+                // Profiler cleared — reset tracking so next load triggers invalidation
+                if (m_PrevFirstFrame >= 0)
+                {
+                    InvalidateAllCaches();
+                    m_PrevFirstFrame = -1;
+                    m_PrevLastFrame = -1;
+                }
+                return;
+            }
 
-            // Detect frame range reset (file loaded or Clear pressed)
-            if (m_PrevFirstFrame >= 0 &&
-                (curFirst > m_PrevLastFrame || curLast < m_PrevFirstFrame || curLast < m_PrevLastFrame))
+            // Detect frame range reset (file loaded or new recording after clear)
+            if (m_PrevFirstFrame < 0 ||
+                curFirst > m_PrevLastFrame || curLast < m_PrevFirstFrame || curLast < m_PrevLastFrame ||
+                curFirst != m_PrevFirstFrame)
             {
                 InvalidateAllCaches();
             }
@@ -854,25 +905,9 @@ namespace LightningProfiler
 
             int visibleFirst = Mathf.Max(curFirst, curLast + 1 - ProfilerUserSettings.frameCount);
 
-            // Main thread: extract data for uncached frames, budgeted to avoid blocking
-            bool allExtracted = true;
-            int extracted = 0;
+            // Main thread: extract data for uncached frames
             for (int frame = visibleFirst; frame <= curLast; frame++)
-            {
-                if (!m_FrameDataCache.ContainsKey(frame))
-                {
-                    GetOrExtractFrameData(frame);
-                    if (++extracted >= k_ExtractionBudgetPerFrame)
-                    {
-                        allExtracted = false;
-                        ProfilerWindow.Repaint(); // continue next editor frame
-                        break;
-                    }
-                }
-            }
-
-            // Only evaluate matches once all frames are extracted
-            if (!allExtracted) return;
+                GetOrExtractFrameData(frame);
 
             // Check if any filter parameter changed
             bool anyChanged = m_FiltersDirty;
@@ -1039,11 +1074,17 @@ namespace LightningProfiler
         void OnSearchChanged(string newSearch)
         {
             m_SearchFilter.SetSearchString(newSearch);
-            // Re-feed all known marker names — thread-safe, parallelizable
             System.Threading.Tasks.Parallel.ForEach(m_MarkerNames, kvp =>
                 m_SearchFilter.OnMarkerDiscovered(kvp.Key, kvp.Value));
             m_FiltersDirty = true;
             UpdatePauseCallbackSubscription();
+            ProfilerWindow.Repaint();
+        }
+
+        void OnViewTypeChanged(int newViewType)
+        {
+            m_ViewMode = (DetailsViewMode)newViewType;
+            EditorPrefs.SetInt(k_ViewModeKey, (int)m_ViewMode);
             ProfilerWindow.Repaint();
         }
 

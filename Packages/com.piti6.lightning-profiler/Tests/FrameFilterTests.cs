@@ -12,7 +12,7 @@ namespace LightningProfiler.Tests
     {
         static CachedFrameData MakeFrame(float effectiveMs)
         {
-            return new CachedFrameData(0, effectiveMs, 0, null);
+            return new CachedFrameData(effectiveMs, 0, null);
         }
 
         [Test]
@@ -45,20 +45,13 @@ namespace LightningProfiler.Tests
             var filter = new SpikeFrameFilter(0f);
             Assert.IsFalse(filter.IsActive);
         }
-
-        [Test]
-        public void DisplayName_IsSpike()
-        {
-            var filter = new SpikeFrameFilter(10f);
-            Assert.AreEqual("Spike", filter.DisplayName);
-        }
     }
 
     public class GcFrameFilterTests
     {
         static CachedFrameData MakeFrame(long gcBytes)
         {
-            return new CachedFrameData(0, 0f, gcBytes, null);
+            return new CachedFrameData(0f, gcBytes, null);
         }
 
         [Test]
@@ -93,19 +86,12 @@ namespace LightningProfiler.Tests
         }
 
         [Test]
-        public void DisplayName_IsGC()
-        {
-            var filter = new GcFrameFilter(10f);
-            Assert.AreEqual("GC", filter.DisplayName);
-        }
-
-        [Test]
         public void Matches_ZeroThreshold_ReturnsFalse()
         {
             // GcFrameFilter(0f) is IsActive==false, and Matches also returns false
             // due to the early guard (m_ThresholdKB <= 0f). Safe even if caller forgets IsActive.
             var filter = new GcFrameFilter(0f);
-            var data = new CachedFrameData(0, 0f, 0, null);
+            var data = new CachedFrameData(0f, 0, null);
             Assert.IsFalse(filter.IsActive);
             Assert.IsFalse(filter.Matches(in data));
         }
@@ -115,7 +101,7 @@ namespace LightningProfiler.Tests
     {
         static CachedFrameData MakeFrame(int frameIndex, HashSet<int> markerIds)
         {
-            return new CachedFrameData(frameIndex, 0f, 0, markerIds);
+            return new CachedFrameData(0f, 0, markerIds);
         }
 
         SearchFrameFilter CreateFilter(string searchTerm, params (int id, string name)[] markers)
@@ -230,7 +216,7 @@ namespace LightningProfiler.Tests
             int matchCount = 0;
             for (int i = 0; i < 10000; i++)
             {
-                var data = new CachedFrameData(0, 0f, 0, new HashSet<int> { i });
+                var data = new CachedFrameData(0f, 0, new HashSet<int> { i });
                 if (filter.Matches(in data))
                     matchCount++;
             }
@@ -245,8 +231,8 @@ namespace LightningProfiler.Tests
             filter.OnMarkerDiscovered(1, "HitMarker");
             filter.OnMarkerDiscovered(2, "MissMarker");
 
-            var hitFrame = new CachedFrameData(0, 0f, 0, new HashSet<int> { 1 });
-            var missFrame = new CachedFrameData(1, 0f, 0, new HashSet<int> { 2 });
+            var hitFrame = new CachedFrameData(0f, 0, new HashSet<int> { 1 });
+            var missFrame = new CachedFrameData(0f, 0, new HashSet<int> { 2 });
 
             // Read from 1000 parallel threads
             var hitResults = new ConcurrentBag<bool>();
@@ -288,7 +274,7 @@ namespace LightningProfiler.Tests
                 else
                 {
                     // Reader: check match
-                    var data = new CachedFrameData(0, 0f, 0, new HashSet<int> { 100 + 2000 }); // the ConcurrentHit marker
+                    var data = new CachedFrameData(0f, 0, new HashSet<int> { 100 + 2000 }); // the ConcurrentHit marker
                     matchResults.Add(filter.Matches(in data));
                 }
             });
@@ -299,10 +285,10 @@ namespace LightningProfiler.Tests
 
             // Deterministic end-state check: after the parallel block, marker 2100 ("ConcurrentHit")
             // must be fully discovered. Verify the filter matches it and rejects non-matching markers.
-            var hitFrame = new CachedFrameData(0, 0f, 0, new HashSet<int> { 2100 });
+            var hitFrame = new CachedFrameData(0f, 0, new HashSet<int> { 2100 });
             Assert.IsTrue(filter.Matches(in hitFrame), "After concurrent chaos, marker 2100 (ConcurrentHit) must match");
 
-            var missFrame = new CachedFrameData(0, 0f, 0, new HashSet<int> { 101, 103, 105 });
+            var missFrame = new CachedFrameData(0f, 0, new HashSet<int> { 101, 103, 105 });
             Assert.IsFalse(filter.Matches(in missFrame), "Frame with only non-matching markers must not match");
         }
 
@@ -348,7 +334,7 @@ namespace LightningProfiler.Tests
             // Now verify: only "Beta*" markers should match
             for (int i = 0; i < 1000; i++)
             {
-                var data = new CachedFrameData(0, 0f, 0, new HashSet<int> { i });
+                var data = new CachedFrameData(0f, 0, new HashSet<int> { i });
                 bool matches = filter.Matches(in data);
                 if (i % 2 == 1) // BetaMarker_N
                     Assert.IsTrue(matches, $"Marker {i} (BetaMarker) should match search 'Beta'");
@@ -364,9 +350,8 @@ namespace LightningProfiler.Tests
         public void Constructor_StoresAllValues()
         {
             var markers = new HashSet<int> { 1, 2, 3 };
-            var data = new CachedFrameData(42, 16.5f, 1024, markers);
+            var data = new CachedFrameData(16.5f, 1024, markers);
 
-            Assert.AreEqual(42, data.FrameIndex);
             Assert.AreEqual(16.5f, data.EffectiveTimeMs, 0.001f);
             Assert.AreEqual(1024, data.GcAllocBytes);
             Assert.AreSame(markers, data.UniqueMarkerIds);
@@ -375,7 +360,7 @@ namespace LightningProfiler.Tests
         [Test]
         public void Constructor_NullMarkers_Allowed()
         {
-            var data = new CachedFrameData(0, 0f, 0, null);
+            var data = new CachedFrameData(0f, 0, null);
             Assert.IsNull(data.UniqueMarkerIds);
         }
     }
@@ -390,7 +375,6 @@ namespace LightningProfiler.Tests
             readonly float m_ThresholdMs;
             public HighGpuFilter(float threshold) { m_ThresholdMs = threshold; }
 
-            public override string DisplayName => "HighGPU";
             public override Color HighlightColor => Color.yellow;
             public override bool IsActive => m_ThresholdMs > 0f;
 
@@ -406,13 +390,12 @@ namespace LightningProfiler.Tests
         public void CustomFilter_ImplementsInterfaceCorrectly()
         {
             IFrameFilter filter = new HighGpuFilter(10f);
-            Assert.AreEqual("HighGPU", filter.DisplayName);
             Assert.IsTrue(filter.IsActive);
 
-            var data = new CachedFrameData(0, 20f, 0, null);
+            var data = new CachedFrameData(20f, 0, null);
             Assert.IsTrue(filter.Matches(in data));
 
-            var lowData = new CachedFrameData(0, 5f, 0, null);
+            var lowData = new CachedFrameData(5f, 0, null);
             Assert.IsFalse(filter.Matches(in lowData));
         }
 
@@ -438,7 +421,7 @@ namespace LightningProfiler.Tests
         public void SpikeFilter_NegativeFrameTime_DoesNotMatch()
         {
             var filter = new SpikeFrameFilter(10f);
-            var data = new CachedFrameData(0, -5f, 0, null);
+            var data = new CachedFrameData(-5f, 0, null);
             Assert.IsFalse(filter.Matches(in data));
         }
 
@@ -448,7 +431,7 @@ namespace LightningProfiler.Tests
             // threshold=0 means IsActive is false, and Matches also returns false
             // due to the early guard (m_ThresholdMs <= 0f). Safe even if caller forgets IsActive.
             var filter = new SpikeFrameFilter(0f);
-            var data = new CachedFrameData(0, 0f, 0, null);
+            var data = new CachedFrameData(0f, 0, null);
             Assert.IsFalse(filter.IsActive);
             Assert.IsFalse(filter.Matches(in data));
         }
@@ -459,10 +442,10 @@ namespace LightningProfiler.Tests
             // 0.5 KB = 512 bytes
             var filter = new GcFrameFilter(0.5f);
 
-            var below = new CachedFrameData(0, 0f, 511, null);
+            var below = new CachedFrameData(0f, 511, null);
             Assert.IsFalse(filter.Matches(in below));
 
-            var exact = new CachedFrameData(0, 0f, 512, null);
+            var exact = new CachedFrameData(0f, 512, null);
             Assert.IsTrue(filter.Matches(in exact));
         }
 
@@ -471,7 +454,7 @@ namespace LightningProfiler.Tests
         {
             // 1 GB = 1048576 KB = 1073741824 bytes
             var filter = new GcFrameFilter(1048576f);
-            var data = new CachedFrameData(0, 0f, 1073741824L, null);
+            var data = new CachedFrameData(0f, 1073741824L, null);
             Assert.IsTrue(filter.Matches(in data));
         }
 
@@ -483,7 +466,7 @@ namespace LightningProfiler.Tests
             filter.OnMarkerDiscovered(1, "HitMarker");
 
             // Frame has an empty marker set (not null) — no marker ID to match against
-            var data = new CachedFrameData(0, 0f, 0, new HashSet<int>());
+            var data = new CachedFrameData(0f, 0, new HashSet<int>());
             Assert.IsFalse(filter.Matches(in data));
         }
 
@@ -515,7 +498,7 @@ namespace LightningProfiler.Tests
 
             // Frame A: 5ms, 10240 bytes (10KB), markers={99} (PlayerLoop, no NetworkSync)
             // GC matches (10240 >= 1024), spike does not (5 < 30), search does not (99 is PlayerLoop)
-            var frameA = new CachedFrameData(0, 5f, 10240, new HashSet<int> { 99 });
+            var frameA = new CachedFrameData(5f, 10240, new HashSet<int> { 99 });
 
             bool anyMatchA = false;
             bool spikeMatchA = spike.Matches(in frameA);
@@ -537,7 +520,7 @@ namespace LightningProfiler.Tests
             Assert.IsTrue(anyMatchA, "At least one active filter should match frame A (OR semantics)");
 
             // Frame B: 5ms, 100 bytes, markers={99} (PlayerLoop) — none match
-            var frameB = new CachedFrameData(1, 5f, 100, new HashSet<int> { 99 });
+            var frameB = new CachedFrameData(5f, 100, new HashSet<int> { 99 });
 
             bool anyMatchB = false;
             Assert.IsFalse(spike.Matches(in frameB), "Spike should not match frame B");

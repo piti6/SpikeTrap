@@ -19,7 +19,6 @@ namespace LightningProfiler
     {
         // ─── Required (implement these) ─────────────────────────────────────
 
-        public abstract string DisplayName { get; }
         public abstract Color HighlightColor { get; }
         public abstract bool IsActive { get; }
         public abstract bool Matches(in CachedFrameData frameData);

@@ -81,7 +81,7 @@ namespace LightningProfiler
         [NonSerialized]
         protected IProfilerSampleNameProvider m_ProfilerSampleNameProvider;
         [SerializeReference]
-        protected IProfilerWindowController m_ProfilerWindowController;
+        protected UnityProfilerWindowControllerAdapter m_ProfilerWindowController;
 
         // Tree of expanded nodes.
         // Each level has a set of expanded marker ids, which are equivalent to sample name.
@@ -118,6 +118,12 @@ namespace LightningProfiler
         bool m_ShouldExecuteDelayedSearch = false;
         int m_PrevFrameIndex;
 
+        // Optimization #4: Skip full rebuild when frame and expansion state are unchanged
+        [NonSerialized] int m_CachedBuildFrameIndex = -1;
+        [NonSerialized] int m_CachedExpandedCount = -1;
+        [NonSerialized] bool m_ForceRebuild = true;
+
+
         public event Action<ProfilerTimeSampleSelection> selectionChanged;
 
         public delegate void SearchChangedCallback(string newSearch);
@@ -140,6 +146,10 @@ namespace LightningProfiler
             string[] m_StringProperties;
             string m_ResolvedCallstack;
 
+            // Cached native property results — avoid repeated interop on large frames
+            int m_CachedMarkerID = -2; // -2 = not yet resolved
+            int m_CachedHasChildren = -1; // -1 = not resolved, 0 = no, 1 = yes
+
             public string[] columnStrings
             {
                 get { return m_StringProperties; }
@@ -149,7 +159,6 @@ namespace LightningProfiler
             {
                 get
                 {
-                    // Lazy callstack resolution (only when requested)
                     if (m_ResolvedCallstack == null)
                         m_ResolvedCallstack = m_FrameDataView.ResolveItemCallstack(id);
                     return m_ResolvedCallstack;
@@ -160,6 +169,28 @@ namespace LightningProfiler
                 get
                 {
                     return m_FrameDataView.GetItemMergedSamplesCount(id);
+                }
+            }
+
+            /// <summary>Cached marker ID — resolved once from native, reused on subsequent repaints.</summary>
+            public int cachedMarkerID
+            {
+                get
+                {
+                    if (m_CachedMarkerID == -2)
+                        m_CachedMarkerID = m_FrameDataView.GetItemMarkerID(id);
+                    return m_CachedMarkerID;
+                }
+            }
+
+            /// <summary>Cached HasItemChildren — resolved once from native, reused on subsequent repaints.</summary>
+            public bool cachedHasChildren
+            {
+                get
+                {
+                    if (m_CachedHasChildren == -1)
+                        m_CachedHasChildren = m_FrameDataView.HasItemChildren(id) ? 1 : 0;
+                    return m_CachedHasChildren == 1;
                 }
             }
 
@@ -181,6 +212,8 @@ namespace LightningProfiler
                 this.displayName = null;
                 m_FrameDataView = frameDataView;
                 m_Initialized = false;
+                m_CachedMarkerID = -2;
+                m_CachedHasChildren = -1;
             }
 
             public void Init(ProfilerFrameDataMultiColumnHeader.Column[] columns, IProfilerSampleNameProvider profilerSampleNameProvider)
@@ -209,7 +242,7 @@ namespace LightningProfiler
             }
         }
 
-        public ProfilerFrameDataTreeView(TreeViewState state, ProfilerFrameDataMultiColumnHeader multicolumnHeader, IProfilerSampleNameProvider profilerSampleNameProvider, IProfilerWindowController profilerWindowController)
+        public ProfilerFrameDataTreeView(TreeViewState state, ProfilerFrameDataMultiColumnHeader multicolumnHeader, IProfilerSampleNameProvider profilerSampleNameProvider, UnityProfilerWindowControllerAdapter profilerWindowController)
             : base(state, multicolumnHeader)
         {
             Assert.IsNotNull(multicolumnHeader);
@@ -582,6 +615,7 @@ namespace LightningProfiler
         {
             m_DelayedSearch.Clear();
             m_ShouldExecuteDelayedSearch = true;
+            m_ForceRebuild = true;
             if (m_prevSearchPattern != searchString && string.IsNullOrEmpty(searchString))
                 return;
             if (m_FrameDataView != null && m_FrameDataView.valid)
@@ -645,8 +679,22 @@ namespace LightningProfiler
             else
             {
                 m_prevSearchPattern = searchString;
-                m_Rows.Clear();
-                AddAllChildren((FrameDataTreeViewItem)root, m_ExpandedMarkersHierarchy, m_Rows, newExpandedIds);
+
+                // Optimization #4: Skip full rebuild if frame and expansion state haven't changed.
+                int currentFrameIdx = ProfilerDriver.lastFrameIndex;
+                int expandedCount = state.expandedIDs.Count;
+                bool needsRebuild = m_ForceRebuild
+                    || m_CachedBuildFrameIndex != currentFrameIdx
+                    || m_CachedExpandedCount != expandedCount;
+
+                if (needsRebuild)
+                {
+                    m_Rows.Clear();
+                    AddAllChildren((FrameDataTreeViewItem)root, m_ExpandedMarkersHierarchy, m_Rows, newExpandedIds);
+                    m_CachedBuildFrameIndex = currentFrameIdx;
+                    m_CachedExpandedCount = expandedCount;
+                    m_ForceRebuild = false;
+                }
             }
 
             if (!requestedDelayedSearch)
@@ -760,57 +808,37 @@ namespace LightningProfiler
             m_ReusableVisitList.AddFirst(AcquireTreeTraversalStateNode(parent, parentExpandedHierararchy));
 
             // Depth-first traversal.
-            // Think of it as an unrolled recursion where stack state is defined by TreeTraversalState.
             while (m_ReusableVisitList.First != null)
             {
                 var currentItem = m_ReusableVisitList.First.Value.item;
                 var currentExpandedHierarchy =  m_ReusableVisitList.First.Value.expandedHierarchy;
                 {
-                    // scope firstItem to avoid reusing it accidentally
                     var firstItem = m_ReusableVisitList.First;
                     firstItem.Value = default;
                     m_TreeTraversalStatePool.Push(firstItem);
                     m_ReusableVisitList.RemoveFirst();
                 }
 
-                // This loop can be a bit of a hot path so, micro optimizations like property caching and inlinig have some effect:
-                // So... cache depth
                 var currentItemDepth = currentItem.depth;
-                // and cache children, remember to also set currentItem.children if a new list is assigned
                 var currentItemChildren = currentItem.children;
 
                 if (currentItemDepth != ProfilerFrameDataHierarchyView.invalidTreeViewDepth)
                     newRows.Add(currentItem);
 
-                m_FrameDataView.GetItemChildren(currentItem.id, m_ReusableChildrenIds);
-                var childrenCount = m_ReusableChildrenIds.Count;
-                if (childrenCount == 0)
-                    continue;
-
+                // --- Check expansion BEFORE fetching children from native API ---
                 if (currentItemDepth != ProfilerFrameDataHierarchyView.invalidTreeViewDepth)
                 {
-                    // Check expansion state from a previous frame view state (marker id path) or current tree view state (frame-specific id).
                     bool needsExpansion;
                     if (m_ExpandedMarkersHierarchy == null)
-                    {
-                        // When we alter expansion state of the currently selected frame,
-                        // we rely on TreeView's IsExpanded functionality.
                         needsExpansion = IsExpanded(currentItem.id);
-                    }
                     else
-                    {
-                        // When we switch to another frame, we rebuild expanded state based on stored m_ExpandedMarkersHierarchy
-                        // which represents tree of expanded nodes.
                         needsExpansion = currentExpandedHierarchy != null;
-                    }
 
                     if (!needsExpansion)
                     {
-                        if (currentItemChildren == null)
+                        // Collapsed: set dummy child WITHOUT calling GetItemChildren.
+                        if (currentItemChildren == null && currentItem.cachedHasChildren)
                         {
-                            // Lets create a fake laze child list.
-                            // Not using CreateChildListForCollapsedParent as that list returns a static list and will cause funkyness later on.
-                            // We have a pool, so we're gonna use that.
                             if (m_ChildrenPool.Count > 0)
                             {
                                 currentItem.children = currentItemChildren = m_ChildrenPool.Pop();
@@ -827,10 +855,15 @@ namespace LightningProfiler
                         newExpandedIds.Add(currentItem.id);
                 }
 
+                // Only fetch children from native API for expanded nodes (or root).
+                m_FrameDataView.GetItemChildren(currentItem.id, m_ReusableChildrenIds);
+                var childrenCount = m_ReusableChildrenIds.Count;
+                if (childrenCount == 0)
+                    continue;
+
                 // Generate children based on the view data.
                 if (currentItemChildren == null)
                 {
-                    // Reuse existing list.
                     if (m_ChildrenPool.Count > 0)
                         currentItem.children = currentItemChildren = m_ChildrenPool.Pop();
                     else
@@ -838,7 +871,6 @@ namespace LightningProfiler
                 }
                 currentItemChildren.Clear();
                 const int k_MaxSuperflousCapacity = 32 - 1;
-                // only reset capacity if needed or if too much space would be wasted. Otherwise, what's the point of pooling them?
                 if (currentItemChildren.Capacity < childrenCount || currentItemChildren.Capacity > childrenCount + k_MaxSuperflousCapacity)
                     currentItemChildren.Capacity = childrenCount;
 
@@ -848,12 +880,11 @@ namespace LightningProfiler
                     currentItemChildren.Add(child);
                 }
 
-                // Add children to the traversal list.
-                // We add all of them in front, so it is depth search, but with preserved siblings order.
+                // Add children to the traversal list in order (depth-first).
                 LinkedListNode<TreeTraversalState> prev = null;
                 foreach (var child in currentItemChildren)
                 {
-                    var childMarkerId = m_FrameDataView.GetItemMarkerID(child.id);
+                    var childMarkerId = ((FrameDataTreeViewItem)child).cachedMarkerID;
                     ExpandedMarkerIdHierarchy childExpandedHierarchy = null;
                     if (currentExpandedHierarchy != null && currentExpandedHierarchy.expandedMarkers != null)
                         currentExpandedHierarchy.expandedMarkers.TryGetValue(childMarkerId, out childExpandedHierarchy);

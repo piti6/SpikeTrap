@@ -1,16 +1,12 @@
 using System;
-using System.Collections.Generic;
-using System.Text;
 using Unity.Profiling.Editor;
 using UnityEditor;
 using UnityEditor.Profiling;
 using UnityEditorInternal;
-using UnityEngine;
-using UnityEngine.UIElements;
 
 namespace LightningProfiler
 {
-    internal sealed class UnityProfilerWindowControllerAdapter : IProfilerWindowController
+    internal sealed class UnityProfilerWindowControllerAdapter
     {
         readonly ProfilerWindow m_Window;
 

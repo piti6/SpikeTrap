@@ -6,7 +6,7 @@ namespace LightningProfiler
 {
     [Serializable]
     [ProfilerModuleMetadata("LightningProfiler CPU Usage", IconPath = "Profiler.CPU")]
-    public sealed class CpuUsageProfilerModule : FilterableProfilerModule
+    public sealed class CpuUsageProfilerModule : ProfilerModule
     {
         private static readonly ProfilerCounterDescriptor[] ChartCounters =
         {
@@ -28,7 +28,6 @@ namespace LightningProfiler
 
         public override ProfilerModuleViewController CreateDetailsViewController()
         {
-            SetChartFilterThreshold(UnityEditor.EditorPrefs.GetFloat("LightningProfiler.ChartFilterThresholdMs", 0f));
             return CpuUsageBridgeDetailsViewController.CreateDetailsViewController(ProfilerWindow);
         }
     }

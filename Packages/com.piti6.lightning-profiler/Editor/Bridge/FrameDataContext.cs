@@ -8,9 +8,6 @@ namespace LightningProfiler
     /// </summary>
     public readonly struct CachedFrameData
     {
-        /// <summary>Frame index.</summary>
-        public readonly int FrameIndex;
-
         /// <summary>Effective CPU time in ms (total frame time minus EditorLoop if editor session).</summary>
         public readonly float EffectiveTimeMs;
 
@@ -20,9 +17,8 @@ namespace LightningProfiler
         /// <summary>Set of unique profiler marker IDs present in this frame.</summary>
         public readonly IReadOnlyCollection<int> UniqueMarkerIds;
 
-        public CachedFrameData(int frameIndex, float effectiveTimeMs, long gcAllocBytes, IReadOnlyCollection<int> uniqueMarkerIds)
+        public CachedFrameData(float effectiveTimeMs, long gcAllocBytes, IReadOnlyCollection<int> uniqueMarkerIds)
         {
-            FrameIndex = frameIndex;
             EffectiveTimeMs = effectiveTimeMs;
             GcAllocBytes = gcAllocBytes;
             UniqueMarkerIds = uniqueMarkerIds;

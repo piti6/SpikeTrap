@@ -10,38 +10,52 @@ An enhanced CPU profiler module for Unity Editor with pluggable frame filters, v
 
 Three built-in filters, each with a visual highlight strip and prev/next navigation buttons:
 
-| Filter | What it detects | Strip color |
-|---|---|---|
-| **Spike** | Frames exceeding a CPU time threshold (ms/s) | Green |
-| **GC** | Frames exceeding a GC allocation threshold (KB/MB) | Red |
-| **Search** | Frames containing a named profiler sample (case-insensitive) | Orange |
+| Filter | What it detects | Unit selector | Strip color |
+|---|---|---|---|
+| **Spike** | Frames exceeding a CPU time threshold | ms / s | Green |
+| **GC** | Frames exceeding a GC allocation threshold | KB / MB | Red |
+| **Search** | Frames containing a named profiler sample (case-insensitive) | — | Orange |
+
+### Match Any / Match All
+
+Control how filters combine with a dropdown in the toolbar:
+
+- **Match any** (OR) — a frame matches if any active filter matches. Default behavior.
+- **Match all** (AND) — a frame matches only if all active filters match. A **Result** strip appears showing the intersection with its own prev/next navigation.
+
+Inactive filters (threshold = 0 or empty search) are skipped — they don't affect the result.
 
 ### Pause & Log on Match
 
-- **Pause** — automatically pauses play mode when any active filter matches a frame
-- **Log** — dumps the full sample call-stack hierarchy to the console for matched frames
+- **Pause on match** — automatically pauses play mode when filters match a frame
+- **Log on match** — dumps the full sample call-stack hierarchy to the console for matched frames
 
 ### Collect Marked Frames
 
-Record only frames that match active filters into a `.data` file. During collection, the profiler shows a "Collecting..." overlay. Save the collected frames as a merged profile when done.
+Record only frames that match active filters into a `.data` file:
+
+1. Set up filters (spike threshold, GC threshold, search term)
+2. Press **Collect** — the chart and details area show a "Collecting..." overlay
+3. Matched frames are saved to temp files as they occur
+4. Press **Save (N)** to merge collected frames into a single `.data` file, or **Stop** to exit without saving
 
 ### Screenshot Preview
 
-Displays per-frame screenshots captured by the `screenshot2profiler` runtime package inline in the profiler details view.
+Displays per-frame screenshots captured by the `screenshot2profiler` runtime package inline in the profiler details view. Screenshots persist while scrubbing through frames without screenshot data, and clear on new recording or file load.
 
 ### Custom Filters
 
-Create your own filters by implementing `IFrameFilter` or extending `FrameFilterBase`:
+Create your own filters by extending `FrameFilterBase`:
 
 ```csharp
 public class MyFilter : FrameFilterBase
 {
-    public override string DisplayName => "MyFilter";
-    public override Color StripColor => Color.cyan;
+    public override Color HighlightColor => Color.cyan;
     public override bool IsActive => true;
 
     public override bool Matches(in CachedFrameData frameData)
     {
+        // Must be thread-safe — called from Parallel.For
         return frameData.EffectiveTimeMs > 16f && frameData.GcAllocBytes > 1024;
     }
 }
@@ -79,8 +93,9 @@ Or clone the repository and copy `Packages/com.piti6.lightning-profiler` into yo
 1. Open the Profiler window (**Window > Analysis > Profiler**)
 2. Select the **LightningProfiler CPU Usage** module from the module dropdown
 3. Set filter thresholds in each strip row (Spike ms, GC KB, search term)
-4. Toggle **Pause** / **Log** as needed
-5. Use the **Collect** button to record only matched frames
+4. Choose **Match any** or **Match all** from the dropdown
+5. Toggle **Pause on match** / **Log on match** as needed
+6. Use the **Collect** button to record only matched frames
 
 ## Documentation
 

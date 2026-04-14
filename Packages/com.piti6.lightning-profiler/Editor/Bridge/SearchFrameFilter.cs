@@ -30,7 +30,6 @@ namespace LightningProfiler
             m_DrawSearchBar = drawSearchBar;
         }
 
-        public override string DisplayName => "Search";
         public override Color HighlightColor => new Color(1f, 0.75f, 0.1f, 0.95f);
         public override bool IsActive => !string.IsNullOrEmpty(m_State.SearchString);
 
