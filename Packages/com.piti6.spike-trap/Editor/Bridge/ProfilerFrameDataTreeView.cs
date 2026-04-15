@@ -278,6 +278,8 @@ namespace SpikeTrap
                 {
                     StoreSelectedState();
                 }
+
+                m_ForceRebuild = true;
             }
 
             m_FrameDataView = frameDataView;
