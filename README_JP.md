@@ -1,4 +1,4 @@
-# Lightning Profiler
+# SpikeTrap
 
 **[English](README.md)**
 
@@ -83,15 +83,15 @@ static class MyFilterRegistration
 Unity Package ManagerからGit URLで追加:
 
 ```
-https://github.com/piti6/LightningProfiler.git?path=Packages/com.piti6.lightning-profiler
+https://github.com/piti6/SpikeTrap.git?path=Packages/com.piti6.spike-trap
 ```
 
-または、リポジトリをクローンして `Packages/com.piti6.lightning-profiler` をプロジェクトの `Packages/` ディレクトリにコピーしてください。
+または、リポジトリをクローンして `Packages/com.piti6.spike-trap` をプロジェクトの `Packages/` ディレクトリにコピーしてください。
 
 ## クイックスタート
 
 1. Profilerウィンドウを開く（**Window > Analysis > Profiler**）
-2. モジュールのドロップダウンから **LightningProfiler CPU Usage** を選択
+2. モジュールのドロップダウンから **SpikeTrap CPU Usage** を選択
 3. 各ストリップ行でフィルター閾値を設定（Spike ms、GC KB、検索語）
 4. **Match any** または **Match all** をドロップダウンから選択
 5. **Pause on match** / **Log on match** を必要に応じて切り替え
@@ -99,13 +99,13 @@ https://github.com/piti6/LightningProfiler.git?path=Packages/com.piti6.lightning
 
 ## ドキュメント
 
-アーキテクチャ、パフォーマンス特性、スレッドセーフティモデル、テストカバレッジの詳細は[パッケージREADME](Packages/com.piti6.lightning-profiler/README.md)を参照してください。
+アーキテクチャ、パフォーマンス特性、スレッドセーフティモデル、テストカバレッジの詳細は[パッケージREADME](Packages/com.piti6.spike-trap/README.md)を参照してください。
 
 ## 開発
 
-このリポジトリはUnityプロジェクトです。`Assets/NewBehaviourScript.cs` がランダムなCPUスパイク、GCプレッシャー、名前付きプロファイラーサンプル（`HeavyComputation`、`GarbageBlast`、`NetworkSync`、`SaveCheckpoint`）を生成し、フィルターのテストに使用できます。
+このリポジトリはUnityプロジェクトです。`Assets/ProfilerStressTest.cs` がランダムなCPUスパイク、GCプレッシャー、名前付きプロファイラーサンプル（`HeavyComputation`、`GarbageBlast`、`NetworkSync`、`SaveCheckpoint`）を生成し、フィルターのテストに使用できます。
 
-テストはUnity Test Runner（EditMode、アセンブリ `LightningProfiler.Tests`）で実行してください。
+テストはUnity Test Runner（EditMode、アセンブリ `SpikeTrap.Tests`）で実行してください。
 
 ## ライセンス
 

@@ -1,0 +1,20 @@
+{
+    "name": "SpikeTrap.Editor",
+    "rootNamespace": "",
+    "references": [
+        "GUID:b4bf93d3e74a3b54c83f18b7d4068e75",
+        "GUID:343deaaf83e0cee4ca978e7df0b80d21",
+        "GUID:2bafac87e7f4b9b418d9448d219b01ab"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

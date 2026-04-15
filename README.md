@@ -1,8 +1,10 @@
-# Lightning Profiler
+# SpikeTrap
+
+> Set traps, catch bad frames.
 
 **[日本語版はこちら](README_JP.md)**
 
-An enhanced CPU profiler module for Unity Editor with pluggable frame filters, visual highlight strips, and marked-frame collection.
+An enhanced CPU profiler module for Unity Editor with pluggable frame filters, visual highlight strips, AI-driven profiling automation, and marked-frame collection.
 
 ## Features
 
@@ -35,7 +37,7 @@ Inactive filters (threshold = 0 or empty search) are skipped — they don't affe
 Record only frames that match active filters into a `.data` file:
 
 1. Set up filters (spike threshold, GC threshold, search term)
-2. Press **Collect** — the chart and details area show a "Collecting..." overlay
+2. Press **Collect** — filter controls stay visible so you can adjust thresholds while collecting
 3. Matched frames are saved to temp files as they occur
 4. Press **Save (N)** to merge collected frames into a single `.data` file, or **Stop** to exit without saving
 
@@ -74,6 +76,22 @@ static class MyFilterRegistration
 }
 ```
 
+### Scripting API
+
+`SpikeTrapAPI` provides static methods for AI-driven profiling automation:
+
+```csharp
+using SpikeTrap;
+
+SpikeTrapAPI.StartCollecting(spikeThresholdMs: 33f);
+// ... game runs, spikes are captured ...
+SpikeTrapAPI.StopCollectingAndSave("/path/to/spikes.data");
+
+FrameSummary[] spikes = SpikeTrapAPI.GetSpikeFrames(33f);
+foreach (var s in spikes)
+    Debug.Log(s); // "Frame 296: 2038.40ms, GC 5.7KB | NavMeshManager=1953.89ms, ..."
+```
+
 ## Requirements
 
 - Unity 2022.3+
@@ -83,15 +101,15 @@ static class MyFilterRegistration
 Add via Unity Package Manager using the git URL:
 
 ```
-https://github.com/piti6/LightningProfiler.git?path=Packages/com.piti6.lightning-profiler
+https://github.com/piti6/SpikeTrap.git?path=Packages/com.piti6.spike-trap
 ```
 
-Or clone the repository and copy `Packages/com.piti6.lightning-profiler` into your project's `Packages/` directory.
+Or clone the repository and copy `Packages/com.piti6.spike-trap` into your project's `Packages/` directory.
 
 ## Quick Start
 
 1. Open the Profiler window (**Window > Analysis > Profiler**)
-2. Select the **LightningProfiler CPU Usage** module from the module dropdown
+2. Select the **SpikeTrap CPU Usage** module from the module dropdown
 3. Set filter thresholds in each strip row (Spike ms, GC KB, search term)
 4. Choose **Match any** or **Match all** from the dropdown
 5. Toggle **Pause on match** / **Log on match** as needed
@@ -99,13 +117,13 @@ Or clone the repository and copy `Packages/com.piti6.lightning-profiler` into yo
 
 ## Documentation
 
-See the [package README](Packages/com.piti6.lightning-profiler/README.md) for detailed architecture, performance characteristics, thread safety model, and test coverage.
+See the [package README](Packages/com.piti6.spike-trap/README.md) for detailed architecture, performance characteristics, thread safety model, and test coverage.
 
 ## Development
 
-This repository is a Unity project. `Assets/NewBehaviourScript.cs` generates random CPU spikes, GC pressure, and named profiler samples (`HeavyComputation`, `GarbageBlast`, `NetworkSync`, `SaveCheckpoint`) for testing.
+This repository is a Unity project. `Assets/ProfilerStressTest.cs` generates random CPU spikes, GC pressure, and named profiler samples (`HeavyComputation`, `GarbageBlast`, `NetworkSync`, `SaveCheckpoint`) for testing.
 
-Run tests via Unity Test Runner (EditMode, assembly `LightningProfiler.Tests`).
+Run tests via Unity Test Runner (EditMode, assembly `SpikeTrap.Tests`).
 
 ## License
 
