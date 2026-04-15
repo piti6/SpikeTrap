@@ -6,6 +6,8 @@
 
 An enhanced CPU profiler module for Unity Editor with pluggable frame filters, visual highlight strips, AI-driven profiling automation, and marked-frame collection.
 
+![SpikeTrap — spike detection with filter strips and hierarchy view](Documentation~/spike-detection-overview.png)
+
 ## Features
 
 ### Frame Filters
@@ -17,6 +19,8 @@ Three built-in filters, each with a visual highlight strip and prev/next navigat
 | **Spike** | Frames exceeding a CPU time threshold | ms / s | Green |
 | **GC** | Frames exceeding a GC allocation threshold | KB / MB | Red |
 | **Search** | Frames containing a named profiler sample (case-insensitive) | — | Orange |
+
+![Filter strips with live spike and GC detection](Documentation~/filter-strips-live.png)
 
 ### Match Any / Match All
 
@@ -40,6 +44,8 @@ Record only frames that match active filters into a `.data` file:
 2. Press **Collect** — filter controls stay visible so you can adjust thresholds while collecting
 3. Matched frames are saved to temp files as they occur
 4. Press **Save (N)** to merge collected frames into a single `.data` file, or **Stop** to exit without saving
+
+![Collect mode overlay](Documentation~/collect-mode.png)
 
 ### Screenshot Preview
 
