@@ -16,16 +16,16 @@ Unity's built-in CPU module is a **rolling buffer** — it keeps the last 300-20
 
 | | Native CPU Module | SpikeTrap |
 |---|---|---|
-| **Frame retention** | Rolling buffer (300-2000 frames) — old frames overwritten | Selective: only matched frames kept, no limit on session length |
-| **10 min @ 60fps** (36,000 frames) | Keeps last 300-2000, loses 95%+ | Keeps only the ~20 spikes that matter |
-| **Rare spike (1 in 10,000)** | Almost certainly overwritten before you see it | Captured automatically by filter |
-| **Filter types** | None built-in | Spike (CPU time), GC (alloc size), Search (marker name), custom |
-| **Visual indicators** | None | Color-coded highlight strips per filter with prev/next navigation |
-| **Filter composition** | N/A | Match Any (OR) / Match All (AND) with result strip |
-| **Automation API** | Low-level `ProfilerDriver` + `HierarchyFrameDataView` — frame-by-frame traversal, manual marker ID resolution | `SpikeTrap.Editor.SpikeTrapApi` static class — fire-and-forget collection, pre-sorted results, marker names resolved |
-| **AI code-first profiling** | Must poll constantly before buffer overwrites data | `SpikeTrapApi.StartCollecting()` → wait → `SpikeTrapApi.StopCollectingAndSave()` → `SpikeTrapApi.GetSpikeFrames()` |
-| **Output format** | Standard `.data` (all frames, rolling) | Standard `.data` (matched frames only, mergeable) |
-| **Hierarchy view** | Built-in | Inherited — same hierarchy, same detail columns |
+| **Frame retention** | ❌ Rolling buffer (300-2000 frames) — old frames overwritten | ✅ Selective: only matched frames kept, no session length limit |
+| **10 min @ 60fps** (36,000 frames) | ❌ Keeps last 300-2000, loses 95%+ | ✅ Keeps only the ~20 spikes that matter |
+| **Rare spike (1 in 10,000)** | ❌ Almost certainly overwritten before you see it | ✅ Captured automatically by filter |
+| **Filter types** | ❌ None built-in | ✅ Spike (CPU time), GC (alloc size), Search (marker name), custom |
+| **Visual indicators** | ❌ None | ✅ Color-coded highlight strips per filter + prev/next navigation |
+| **Filter composition** | ❌ N/A | ✅ Match Any (OR) / Match All (AND) with result strip |
+| **Automation API** | ❌ Low-level `ProfilerDriver` — frame-by-frame traversal, manual marker ID resolution | ✅ `SpikeTrapApi` — fire-and-forget collection, pre-sorted results, names resolved |
+| **AI code-first** | ❌ Must poll constantly before buffer overwrites | ✅ `StartCollecting()` → wait → `StopCollectingAndSave()` → `GetSpikeFrames()` |
+| **Output format** | ⚠️ Standard `.data` (all frames, rolling) | ✅ Standard `.data` (matched frames only, mergeable) |
+| **Hierarchy view** | ✅ Built-in | ✅ Inherited — same hierarchy, same detail columns |
 
 ### How Selective Capture Works
 
@@ -34,6 +34,29 @@ The native profiler records every frame into a fixed-size ring buffer. When the 
 SpikeTrap hooks into the same native profiler data stream but evaluates each frame against your active filters in real-time. Only frames that match (spike threshold exceeded, GC allocation too high, specific marker found) are saved to temporary `.data` files. At the end of a session, matched frames are merged into a single file.
 
 This means a 100-minute profiling session that produces 360,000 frames might save only 50 spike frames — each one with full call-stack detail, ready for analysis.
+
+## Requirements
+
+- Unity 2022.3+
+
+## Installation
+
+Add via Unity Package Manager using the git URL:
+
+```
+https://github.com/piti6/SpikeTrap.git?path=Packages/com.piti6.spike-trap
+```
+
+Or clone the repository and copy `Packages/com.piti6.spike-trap` into your project's `Packages/` directory.
+
+## Quick Start
+
+1. Open the Profiler window (**Window > Analysis > Profiler**)
+2. Select the **SpikeTrap CPU Usage** module from the module dropdown
+3. Set filter thresholds in each strip row (Spike ms, GC KB, search term)
+4. Choose **Match any** or **Match all** from the dropdown
+5. Toggle **Pause on match** / **Log on match** as needed
+6. Use the **Collect** button to record only matched frames
 
 ## Features
 
@@ -194,29 +217,6 @@ public interface IFrameFilter : IDisposable
 | `s_MarkerNames` | Yes | `ConcurrentDictionary` |
 | `CollectMatchingFrames` | Yes | `Parallel.For` with `ConcurrentBag` result collection |
 | Native API extraction | Main thread only | `GetRawFrameDataView`, `ProfilerFrameDataIterator` |
-
-## Requirements
-
-- Unity 2022.3+
-
-## Installation
-
-Add via Unity Package Manager using the git URL:
-
-```
-https://github.com/piti6/SpikeTrap.git?path=Packages/com.piti6.spike-trap
-```
-
-Or clone the repository and copy `Packages/com.piti6.spike-trap` into your project's `Packages/` directory.
-
-## Quick Start
-
-1. Open the Profiler window (**Window > Analysis > Profiler**)
-2. Select the **SpikeTrap CPU Usage** module from the module dropdown
-3. Set filter thresholds in each strip row (Spike ms, GC KB, search term)
-4. Choose **Match any** or **Match all** from the dropdown
-5. Toggle **Pause on match** / **Log on match** as needed
-6. Use the **Collect** button to record only matched frames
 
 ## Development
 

@@ -14,16 +14,16 @@ Unityの標準CPUモジュールは**リングバッファ**方式 — 直近300
 
 | | 標準CPUモジュール | SpikeTrap |
 |---|---|---|
-| **フレーム保持** | リングバッファ（300〜2000フレーム）— 古いフレームは上書き | 選択的: マッチしたフレームのみ保持、セッション長の制限なし |
-| **10分 @ 60fps**（36,000フレーム） | 直近300〜2000のみ保持、95%以上を喪失 | 重要な〜20スパイクのみを保持 |
-| **レアスパイク（1/10,000）** | 確認前にほぼ確実に上書きされる | フィルターが自動的にキャプチャ |
-| **フィルター種別** | 組み込みなし | Spike（CPU時間）、GC（アロケーション量）、Search（マーカー名）、カスタム |
-| **視覚インジケーター** | なし | フィルターごとの色分けハイライトストリップ + 前後ナビゲーション |
-| **フィルター合成** | N/A | Match Any（OR）/ Match All（AND）+ 結果ストリップ |
-| **自動化API** | 低レベルの `ProfilerDriver` + `HierarchyFrameDataView` — フレーム単位の走査、マーカーID手動解決 | `SpikeTrap.Editor.SpikeTrapApi` 静的クラス — 収集開始→待機→保存→分析、マーカー名解決済み |
-| **AIコードファースト** | バッファ上書き前に常時ポーリングが必要 | `SpikeTrapApi.StartCollecting()` → 待機 → `SpikeTrapApi.StopCollectingAndSave()` → `SpikeTrapApi.GetSpikeFrames()` |
-| **出力形式** | 標準 `.data`（全フレーム、ローリング） | 標準 `.data`（マッチフレームのみ、マージ可能） |
-| **階層ビュー** | 組み込み | 継承 — 同じ階層ビュー、同じ詳細カラム |
+| **フレーム保持** | ❌ リングバッファ（300〜2000フレーム）— 古いフレームは上書き | ✅ 選択的: マッチしたフレームのみ保持、セッション長の制限なし |
+| **10分 @ 60fps**（36,000フレーム） | ❌ 直近300〜2000のみ保持、95%以上を喪失 | ✅ 重要な〜20スパイクのみを保持 |
+| **レアスパイク（1/10,000）** | ❌ 確認前にほぼ確実に上書きされる | ✅ フィルターが自動的にキャプチャ |
+| **フィルター種別** | ❌ 組み込みなし | ✅ Spike（CPU時間）、GC（アロケーション量）、Search（マーカー名）、カスタム |
+| **視覚インジケーター** | ❌ なし | ✅ フィルターごとの色分けハイライトストリップ + 前後ナビゲーション |
+| **フィルター合成** | ❌ N/A | ✅ Match Any（OR）/ Match All（AND）+ 結果ストリップ |
+| **自動化API** | ❌ 低レベルの `ProfilerDriver` — フレーム単位の走査、マーカーID手動解決 | ✅ `SpikeTrapApi` — 収集開始→待機→保存→分析、マーカー名解決済み |
+| **AIコードファースト** | ❌ バッファ上書き前に常時ポーリングが必要 | ✅ `StartCollecting()` → 待機 → `StopCollectingAndSave()` → `GetSpikeFrames()` |
+| **出力形式** | ⚠️ 標準 `.data`（全フレーム、ローリング） | ✅ 標準 `.data`（マッチフレームのみ、マージ可能） |
+| **階層ビュー** | ✅ 組み込み | ✅ 継承 — 同じ階層ビュー、同じ詳細カラム |
 
 ### 選択的キャプチャの仕組み
 
@@ -32,6 +32,29 @@ Unityの標準CPUモジュールは**リングバッファ**方式 — 直近300
 SpikeTrapは同じネイティブプロファイラーのデータストリームにフックし、各フレームをアクティブなフィルターでリアルタイム評価します。マッチしたフレーム（スパイク閾値超過、GCアロケーション過大、特定マーカー検出）のみが一時 `.data` ファイルに保存されます。セッション終了時にマッチフレームを1つのファイルにマージします。
 
 つまり、360,000フレームを生成する100分間のプロファイリングセッションでも、保存されるのは50フレーム程度のスパイクのみ — 各フレームにフルコールスタック付きで、すぐに分析可能です。
+
+## 要件
+
+- Unity 2022.3+
+
+## インストール
+
+Unity Package ManagerからGit URLで追加:
+
+```
+https://github.com/piti6/SpikeTrap.git?path=Packages/com.piti6.spike-trap
+```
+
+または、リポジトリをクローンして `Packages/com.piti6.spike-trap` をプロジェクトの `Packages/` ディレクトリにコピーしてください。
+
+## クイックスタート
+
+1. Profilerウィンドウを開く（**Window > Analysis > Profiler**）
+2. モジュールのドロップダウンから **SpikeTrap CPU Usage** を選択
+3. 各ストリップ行でフィルター閾値を設定（Spike ms、GC KB、検索語）
+4. **Match any** または **Match all** をドロップダウンから選択
+5. **Pause on match** / **Log on match** を必要に応じて切り替え
+6. **Collect** ボタンでマッチしたフレームのみを記録
 
 ## 機能
 
@@ -192,29 +215,6 @@ public interface IFrameFilter : IDisposable
 | `s_MarkerNames` | Yes | `ConcurrentDictionary` |
 | `CollectMatchingFrames` | Yes | `Parallel.For` + `ConcurrentBag` による結果収集 |
 | ネイティブAPI抽出 | メインスレッドのみ | `GetRawFrameDataView`, `ProfilerFrameDataIterator` |
-
-## 要件
-
-- Unity 2022.3+
-
-## インストール
-
-Unity Package ManagerからGit URLで追加:
-
-```
-https://github.com/piti6/SpikeTrap.git?path=Packages/com.piti6.spike-trap
-```
-
-または、リポジトリをクローンして `Packages/com.piti6.spike-trap` をプロジェクトの `Packages/` ディレクトリにコピーしてください。
-
-## クイックスタート
-
-1. Profilerウィンドウを開く（**Window > Analysis > Profiler**）
-2. モジュールのドロップダウンから **SpikeTrap CPU Usage** を選択
-3. 各ストリップ行でフィルター閾値を設定（Spike ms、GC KB、検索語）
-4. **Match any** または **Match all** をドロップダウンから選択
-5. **Pause on match** / **Log on match** を必要に応じて切り替え
-6. **Collect** ボタンでマッチしたフレームのみを記録
 
 ## 開発
 
