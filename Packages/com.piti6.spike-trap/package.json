@@ -1,0 +1,23 @@
+{
+  "name": "com.piti6.spike-trap",
+  "version": "0.1.0",
+  "displayName": "SpikeTrap",
+  "description": "Set traps, catch bad frames. An enhanced CPU profiler module for the Unity Editor featuring spike detection with auto-pause, per-frame threshold filtering, GC allocation tracking, AI-driven profiling automation, and visual highlight strips.",
+  "unity": "2022.3",
+  "license": "MIT",
+  "keywords": [
+    "profiler",
+    "cpu",
+    "spike",
+    "performance",
+    "optimization",
+    "spike-trap"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/piti6/SpikeTrap.git"
+  },
+  "author": {
+    "name": "piti6"
+  }
+}
