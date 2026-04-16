@@ -10,30 +10,35 @@ An enhanced CPU profiler module for Unity Editor with pluggable frame filters, v
 
 ## Why SpikeTrap?
 
-Unity's built-in CPU module is a **rolling buffer** — it keeps the last 300-2000 frames and silently discards everything older. At 60fps that's 5-33 seconds of history. SpikeTrap replaces this with **selective capture**: only frames that match your filters are kept, so you can profile for minutes or hours without losing data.
+Unity's built-in CPU module is a **rolling buffer** — it keeps the last 300-2000 frames and silently discards everything older. At 60fps that's 5-33 seconds of history.
 
-### SpikeTrap vs. Native CPU Module
+SpikeTrap adds two layers on top:
 
-| | Native CPU Module | SpikeTrap |
-|---|---|---|
-| **Frame retention** | ❌ Rolling buffer (300-2000 frames) — old frames overwritten | ✅ Selective: only matched frames kept, no session length limit |
-| **10 min @ 60fps** (36,000 frames) | ❌ Keeps last 300-2000, loses 95%+ | ✅ Keeps only the ~20 spikes that matter |
-| **Rare spike (1 in 10,000)** | ❌ Almost certainly overwritten before you see it | ✅ Captured automatically by filter |
-| **Filter types** | ❌ None built-in | ✅ Spike (CPU time), GC (alloc size), Search (marker name), custom |
-| **Visual indicators** | ❌ None | ✅ Color-coded highlight strips per filter + prev/next navigation |
-| **Filter composition** | ❌ N/A | ✅ Match Any (OR) / Match All (AND) with result strip |
-| **Automation API** | ❌ Low-level `ProfilerDriver` — frame-by-frame traversal, manual marker ID resolution | ✅ `SpikeTrapApi` — fire-and-forget collection, pre-sorted results, names resolved |
-| **AI code-first** | ❌ Must poll constantly before buffer overwrites | ✅ `StartCollecting()` → wait → `StopCollectingAndSave()` → `GetSpikeFrames()` |
-| **Output format** | ⚠️ Standard `.data` (all frames, rolling) | ✅ Standard `.data` (matched frames only, mergeable) |
-| **Hierarchy view** | ✅ Built-in | ✅ Inherited — same hierarchy, same detail columns |
+- **Recording mode** — the standard profiler keeps running, but SpikeTrap adds filter highlight strips, prev/next navigation, pause on match, and log on match. You can spot spikes at a glance without changing how recording works.
+- **Collect mode** — set your filter thresholds, press **Collect**, and just play your game. SpikeTrap captures only the frames that matter in the background. No need to stare at the profiler — come back when you're done and save the results.
 
-### How Selective Capture Works
+### Comparison
 
-The native profiler records every frame into a fixed-size ring buffer. When the buffer fills, the oldest frame is gone forever.
+| | Native CPU Module | SpikeTrap (Recording) | SpikeTrap (Collect) |
+|---|---|---|---|
+| **Frame retention** | ❌ Rolling buffer (300-2000) | ❌ Same rolling buffer | ✅ Only matched frames, no limit |
+| **10 min @ 60fps** (36K frames) | ❌ Loses 95%+ | ❌ Same, but spikes highlighted | ✅ Keeps only ~20 spikes |
+| **Rare spike (1/10,000)** | ❌ Overwritten before you see it | ⚠️ Caught if still in buffer | ✅ Captured automatically |
+| **Filter types** | ❌ None | ✅ Spike, GC, Search, custom | ✅ Same filters drive capture |
+| **Visual indicators** | ❌ None | ✅ Color-coded strips + nav | ✅ Same + "Collecting..." overlay |
+| **Filter composition** | ❌ N/A | ✅ Match Any / Match All | ✅ Same logic drives capture |
+| **Pause & log on match** | ❌ None | ✅ Auto-pause and/or log | ✅ Available |
+| **Automation API** | ❌ Low-level `ProfilerDriver` | — | ✅ `SpikeTrapApi` fire-and-forget |
+| **Output** | ⚠️ `.data` (all frames, rolling) | ⚠️ Same | ✅ `.data` (matched only, mergeable) |
+| **Hierarchy view** | ✅ Built-in | ✅ Same | ✅ Same |
 
-SpikeTrap hooks into the same native profiler data stream but evaluates each frame against your active filters in real-time. Only frames that match (spike threshold exceeded, GC allocation too high, specific marker found) are saved to temporary `.data` files. At the end of a session, matched frames are merged into a single file.
+### How Collect Mode Works
 
-This means a 100-minute profiling session that produces 360,000 frames might save only 50 spike frames — each one with full call-stack detail, ready for analysis.
+Set your filter thresholds, press **Collect**, and play your game normally. SpikeTrap evaluates each frame against your active filters in real-time — only frames that match (spike threshold exceeded, GC allocation too high, specific marker found) are saved to temporary `.data` files. When you're done, press **Save** to merge them into a single file.
+
+A 100-minute session producing 360,000 frames might save only 50 spike frames — each with full call-stack detail, ready for analysis. You don't lose data to the rolling buffer, and you don't need to watch the profiler while it runs.
+
+This also makes Collect mode ideal for AI-driven profiling. The entire workflow — start collecting, wait, stop, save, analyze — maps to simple `SpikeTrapApi` calls with no frame-by-frame polling or buffer management. An AI agent can kick off a profiling session, let the game run, and retrieve pre-sorted results with marker names already resolved.
 
 ## Requirements
 
