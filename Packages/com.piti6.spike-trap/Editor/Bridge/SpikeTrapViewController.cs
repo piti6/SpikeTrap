@@ -292,7 +292,6 @@ namespace SpikeTrap.Editor
             m_TimelineGUI = new ProfilerTimelineGUI();
             var cpuModule = ProfilerWindow.GetProfilerModule<CPUProfilerModule>(UnityEngine.Profiling.ProfilerArea.CPU);
             m_TimelineGUI.OnEnable(cpuModule, ProfilerWindow, false);
-            IsCollectingMarkedFrames = false;
             if (IsCollectingMarkedFrames)
             {
                 m_DefaultFrameHistoryLength = Mathf.Clamp(EditorPrefs.GetInt(k_DefaultFrameHistoryKey, ProfilerUserSettings.frameCount), 1, 2000);
