@@ -106,9 +106,12 @@ SpikeTrapApi.DestroyScreenshotCapture();
 
 ### Custom Filters
 
-Create your own filters by extending `FrameFilterBase`:
+Create your own filters by extending `FrameFilterBase` and registering via `SpikeTrapApi`:
 
 ```csharp
+using SpikeTrap.Editor;
+using UnityEngine;
+
 public class MyFilter : FrameFilterBase
 {
     public override Color HighlightColor => Color.cyan;
@@ -120,21 +123,9 @@ public class MyFilter : FrameFilterBase
         return frameData.EffectiveTimeMs > 16f && frameData.GcAllocBytes > 1024;
     }
 }
-```
 
-Register via `[InitializeOnLoad]`:
-
-```csharp
-using SpikeTrap.Editor;
-
-[InitializeOnLoad]
-static class MyFilterRegistration
-{
-    static MyFilterRegistration()
-    {
-        SpikeTrapApi.RegisterCustomFilterFactory(() => new MyFilter());
-    }
-}
+// Register (e.g., from an editor script or [InitializeOnLoad] constructor)
+SpikeTrapApi.RegisterCustomFilterFactory(() => new MyFilter());
 ```
 
 ### Scripting API
@@ -152,6 +143,57 @@ FrameSummary[] spikes = SpikeTrapApi.GetSpikeFrames(33f);
 foreach (var s in spikes)
     Debug.Log(s); // "Frame 296: 2038.40ms, GC 5.7KB | NavMeshManager=1953.89ms, ..."
 ```
+
+## Architecture
+
+### Pluggable Filter System
+
+Filters implement `IFrameFilter` (or extend `FrameFilterBase`). The controller handles all native API access, caching, and matched-frame tracking.
+
+```
+Native API (main thread)          Managed cache              Filters (thread-safe)
+ProfilerDriver.GetRawFrameDataView  -->  CachedFrameData  -->  filter.Matches()
+  one call per frame per session         { EffectiveTimeMs,     pure managed,
+  extracts all data in one pass            GcAllocBytes,        parallelized for
+                                           UniqueMarkerIds }    large frame ranges
+```
+
+**`CachedFrameData`** is a readonly struct containing all filter-relevant data extracted from a single frame. Filters receive this pre-extracted data and never touch native APIs.
+
+**`IFrameFilter`** interface:
+
+```csharp
+public interface IFrameFilter : IDisposable
+{
+    Color HighlightColor { get; }
+    bool IsActive { get; }
+    bool DrawToolbarControls();
+    bool Matches(in CachedFrameData frameData);
+    void InvalidateCache();
+}
+```
+
+### Performance
+
+- **One native call per frame per session**: `GetRawFrameDataView` is called once per frame. All filter data (CPU time, GC bytes, marker IDs) is extracted in a single sample iteration loop.
+- **Cached frame data**: Extracted data is stored in a `ConcurrentDictionary`. Threshold/search changes re-evaluate cached managed data without native API calls.
+- **Parallel matching**: Full rescans above 500 frames use `Parallel.For`. `OnMarkerDiscovered` and `Matches` are thread-safe.
+- **Marker ID caching**: Search filter resolves marker names once per unique ID. Subsequent checks are integer comparisons via `ConcurrentDictionary`.
+- **Amortized extraction**: Loading large `.data` files extracts 50 frames per editor frame to avoid blocking.
+- **Session-aware caching**: Caches use `frameStartTimeNs` as session fingerprint. Same `.data` file loaded multiple times shares the same cache (A→B→A reuses A's cached data).
+
+### Thread Safety
+
+| Component | Thread-safe | Mechanism |
+|---|---|---|
+| `SearchFrameFilter.Matches` | Yes | Single volatile `SearchState` reference, local capture |
+| `SearchFrameFilter.OnMarkerDiscovered` | Yes | `ConcurrentDictionary.TryAdd`, local state capture (internal to search filter) |
+| `SpikeFrameFilter.Matches` | Yes | Reads only immutable `CachedFrameData` fields |
+| `GcFrameFilter.Matches` | Yes | Reads only immutable `CachedFrameData` fields |
+| `s_FrameDataCache` | Yes | `ConcurrentDictionary` |
+| `s_MarkerNames` | Yes | `ConcurrentDictionary` |
+| `CollectMatchingFrames` | Yes | `Parallel.For` with `ConcurrentBag` result collection |
+| Native API extraction | Main thread only | `GetRawFrameDataView`, `ProfilerFrameDataIterator` |
 
 ## Requirements
 
@@ -175,10 +217,6 @@ Or clone the repository and copy `Packages/com.piti6.spike-trap` into your proje
 4. Choose **Match any** or **Match all** from the dropdown
 5. Toggle **Pause on match** / **Log on match** as needed
 6. Use the **Collect** button to record only matched frames
-
-## Documentation
-
-See the [package README](Packages/com.piti6.spike-trap/README.md) for detailed architecture, performance characteristics, and thread safety model.
 
 ## Development
 

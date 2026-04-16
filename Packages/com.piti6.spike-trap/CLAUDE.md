@@ -103,15 +103,6 @@ The cache uses `frameStartTimeNs` from the first frame as a session fingerprint.
 Register custom filters for specialized detection:
 
 ```csharp
-[InitializeOnLoad]
-static class MyFilterSetup
-{
-    static MyFilterSetup()
-    {
-        SpikeTrapApi.RegisterCustomFilterFactory(() => new MyFilter());
-    }
-}
-
 public class MyFilter : FrameFilterBase
 {
     public override Color HighlightColor => Color.cyan;
@@ -122,4 +113,7 @@ public class MyFilter : FrameFilterBase
         return frameData.EffectiveTimeMs > 16.6f && frameData.GcAllocBytes > 1024;
     }
 }
+
+// Register (e.g., from an editor script or [InitializeOnLoad] constructor)
+SpikeTrapApi.RegisterCustomFilterFactory(() => new MyFilter());
 ```

@@ -57,38 +57,14 @@ SpikeTrapApi.InitializeScreenshotCapture(captureBehaviour: target =>
 SpikeTrapApi.DestroyScreenshotCapture();
 ```
 
-## Architecture
+## Custom Filters
 
-### Pluggable Filter System
-
-Filters implement `IFrameFilter` (or extend `FrameFilterBase`). The controller handles all native API access, caching, and matched-frame tracking.
-
-```
-Native API (main thread)          Managed cache              Filters (thread-safe)
-ProfilerDriver.GetRawFrameDataView  -->  CachedFrameData  -->  filter.Matches()
-  one call per frame per session         { EffectiveTimeMs,     pure managed,
-  extracts all data in one pass            GcAllocBytes,        parallelized for
-                                           UniqueMarkerIds }    large frame ranges
-```
-
-**`CachedFrameData`** is a readonly struct containing all filter-relevant data extracted from a single frame. Filters receive this pre-extracted data and never touch native APIs.
-
-**`IFrameFilter`** interface:
+Create your own filters by extending `FrameFilterBase` and registering via `SpikeTrapApi`:
 
 ```csharp
-public interface IFrameFilter : IDisposable
-{
-    Color HighlightColor { get; }
-    bool IsActive { get; }
-    bool DrawToolbarControls();
-    bool Matches(in CachedFrameData frameData);
-    void InvalidateCache();
-}
-```
+using SpikeTrap.Editor;
+using UnityEngine;
 
-**`FrameFilterBase`** provides defaults for optional members. Custom filter authors implement only 3 members:
-
-```csharp
 public class MyFilter : FrameFilterBase
 {
     public override Color HighlightColor => Color.cyan;
@@ -96,46 +72,13 @@ public class MyFilter : FrameFilterBase
     public override bool Matches(in CachedFrameData frameData)
     {
         // Pure managed matching logic — no Unity API calls needed
+        // Must be thread-safe — called from Parallel.For
     }
 }
+
+// Register (e.g., from an editor script or [InitializeOnLoad] constructor)
+SpikeTrapApi.RegisterCustomFilterFactory(() => new MyFilter());
 ```
-
-### Registering Custom Filters
-
-```csharp
-using SpikeTrap.Editor;
-
-[InitializeOnLoad]
-static class MyFilterRegistration
-{
-    static MyFilterRegistration()
-    {
-        SpikeTrapApi.RegisterCustomFilterFactory(() => new MyFilter());
-    }
-}
-```
-
-### Performance
-
-- **One native call per frame per session**: `GetRawFrameDataView` is called once per frame. All filter data (CPU time, GC bytes, marker IDs) is extracted in a single sample iteration loop.
-- **Cached frame data**: Extracted data is stored in a `ConcurrentDictionary`. Threshold/search changes re-evaluate cached managed data without native API calls.
-- **Parallel matching**: Full rescans above 500 frames use `Parallel.For`. `OnMarkerDiscovered` and `Matches` are thread-safe.
-- **Marker ID caching**: Search filter resolves marker names once per unique ID. Subsequent checks are integer comparisons via `ConcurrentDictionary`.
-- **Amortized extraction**: Loading large `.data` files extracts 50 frames per editor frame to avoid blocking.
-- **Session-aware caching**: Caches use `frameStartTimeNs` as session fingerprint. Same `.data` file loaded multiple times shares the same cache (A→B→A reuses A's cached data).
-
-### Thread Safety
-
-| Component | Thread-safe | Mechanism |
-|---|---|---|
-| `SearchFrameFilter.Matches` | Yes | Single volatile `SearchState` reference, local capture |
-| `SearchFrameFilter.OnMarkerDiscovered` | Yes | `ConcurrentDictionary.TryAdd`, local state capture (internal to search filter) |
-| `SpikeFrameFilter.Matches` | Yes | Reads only immutable `CachedFrameData` fields |
-| `GcFrameFilter.Matches` | Yes | Reads only immutable `CachedFrameData` fields |
-| `s_FrameDataCache` | Yes | `ConcurrentDictionary` |
-| `s_MarkerNames` | Yes | `ConcurrentDictionary` |
-| `CollectMatchingFrames` | Yes | `Parallel.For` with `ConcurrentBag` result collection |
-| Native API extraction | Main thread only | `GetRawFrameDataView`, `ProfilerFrameDataIterator` |
 
 ## Scripting API
 

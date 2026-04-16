@@ -104,9 +104,12 @@ SpikeTrapApi.DestroyScreenshotCapture();
 
 ### カスタムフィルター
 
-`FrameFilterBase` を継承して独自のフィルターを作成:
+`FrameFilterBase` を継承して独自のフィルターを作成し、`SpikeTrapApi` で登録:
 
 ```csharp
+using SpikeTrap.Editor;
+using UnityEngine;
+
 public class MyFilter : FrameFilterBase
 {
     public override Color HighlightColor => Color.cyan;
@@ -118,21 +121,9 @@ public class MyFilter : FrameFilterBase
         return frameData.EffectiveTimeMs > 16f && frameData.GcAllocBytes > 1024;
     }
 }
-```
 
-`[InitializeOnLoad]` で登録:
-
-```csharp
-using SpikeTrap.Editor;
-
-[InitializeOnLoad]
-static class MyFilterRegistration
-{
-    static MyFilterRegistration()
-    {
-        SpikeTrapApi.RegisterCustomFilterFactory(() => new MyFilter());
-    }
-}
+// 登録（エディタスクリプトや [InitializeOnLoad] コンストラクタから呼び出し）
+SpikeTrapApi.RegisterCustomFilterFactory(() => new MyFilter());
 ```
 
 ### スクリプティングAPI
@@ -150,6 +141,57 @@ FrameSummary[] spikes = SpikeTrapApi.GetSpikeFrames(33f);
 foreach (var s in spikes)
     Debug.Log(s); // "Frame 296: 2038.40ms, GC 5.7KB | NavMeshManager=1953.89ms, ..."
 ```
+
+## アーキテクチャ
+
+### プラグイン可能なフィルターシステム
+
+フィルターは `IFrameFilter` を実装（または `FrameFilterBase` を継承）します。コントローラがネイティブAPIアクセス、キャッシング、マッチフレーム追跡をすべて管理します。
+
+```
+ネイティブAPI（メインスレッド）      マネージドキャッシュ          フィルター（スレッドセーフ）
+ProfilerDriver.GetRawFrameDataView  -->  CachedFrameData  -->  filter.Matches()
+  セッションごとに1フレーム1回         { EffectiveTimeMs,     純マネージド,
+  1パスで全データを抽出                  GcAllocBytes,        大きなフレーム範囲で
+                                         UniqueMarkerIds }    並列化
+```
+
+**`CachedFrameData`** は1フレームから抽出されたフィルター関連データを含むreadonly構造体です。フィルターはこの事前抽出データを受け取り、ネイティブAPIには一切触れません。
+
+**`IFrameFilter`** インターフェース:
+
+```csharp
+public interface IFrameFilter : IDisposable
+{
+    Color HighlightColor { get; }
+    bool IsActive { get; }
+    bool DrawToolbarControls();
+    bool Matches(in CachedFrameData frameData);
+    void InvalidateCache();
+}
+```
+
+### パフォーマンス
+
+- **セッションごとに1フレーム1回のネイティブ呼び出し**: `GetRawFrameDataView` はフレームごとに1回のみ呼ばれます。フィルターデータ（CPU時間、GCバイト、マーカーID）は単一のサンプルイテレーションループで抽出されます。
+- **キャッシュされたフレームデータ**: 抽出データは `ConcurrentDictionary` に格納。閾値/検索の変更はキャッシュ済みマネージドデータを再評価し、ネイティブAPI呼び出しは不要。
+- **並列マッチング**: 500フレーム以上のフルリスキャンは `Parallel.For` を使用。`OnMarkerDiscovered` と `Matches` はスレッドセーフ。
+- **マーカーIDキャッシング**: 検索フィルターはユニークIDごとに1回だけマーカー名を解決。以降のチェックは `ConcurrentDictionary` 経由の整数比較。
+- **分割抽出**: 大きな `.data` ファイルの読み込みはエディタフレームごとに50フレームずつ抽出し、ブロッキングを回避。
+- **セッション認識キャッシング**: キャッシュは `frameStartTimeNs` をセッションフィンガープリントとして使用。同じ `.data` ファイルを複数回読み込んでも同じキャッシュを共有（A→B→A でAのキャッシュを再利用）。
+
+### スレッドセーフティ
+
+| コンポーネント | スレッドセーフ | メカニズム |
+|---|---|---|
+| `SearchFrameFilter.Matches` | Yes | 単一volatile `SearchState` 参照、ローカルキャプチャ |
+| `SearchFrameFilter.OnMarkerDiscovered` | Yes | `ConcurrentDictionary.TryAdd`、ローカルステートキャプチャ（検索フィルター内部） |
+| `SpikeFrameFilter.Matches` | Yes | 不変の `CachedFrameData` フィールドのみ読み取り |
+| `GcFrameFilter.Matches` | Yes | 不変の `CachedFrameData` フィールドのみ読み取り |
+| `s_FrameDataCache` | Yes | `ConcurrentDictionary` |
+| `s_MarkerNames` | Yes | `ConcurrentDictionary` |
+| `CollectMatchingFrames` | Yes | `Parallel.For` + `ConcurrentBag` による結果収集 |
+| ネイティブAPI抽出 | メインスレッドのみ | `GetRawFrameDataView`, `ProfilerFrameDataIterator` |
 
 ## 要件
 
@@ -173,10 +215,6 @@ https://github.com/piti6/SpikeTrap.git?path=Packages/com.piti6.spike-trap
 4. **Match any** または **Match all** をドロップダウンから選択
 5. **Pause on match** / **Log on match** を必要に応じて切り替え
 6. **Collect** ボタンでマッチしたフレームのみを記録
-
-## ドキュメント
-
-アーキテクチャ、パフォーマンス特性、スレッドセーフティモデル、テストカバレッジの詳細は[パッケージREADME](Packages/com.piti6.spike-trap/README.md)を参照してください。
 
 ## 開発
 
