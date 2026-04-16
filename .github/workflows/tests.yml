@@ -1,0 +1,49 @@
+name: Tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  editmode-tests:
+    name: EditMode Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - uses: actions/cache@v4
+        with:
+          path: Library
+          key: Library-${{ hashFiles('Packages/packages-lock.json') }}
+          restore-keys: |
+            Library-
+
+      # GameCI unity-test-runner runs EditMode tests
+      # Requires UNITY_LICENSE secret (Unity .ulf license file content)
+      # See: https://game.ci/docs/github/activation
+      - uses: game-ci/unity-test-runner@v4
+        id: tests
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          unityVersion: 2022.3.62f2
+          testMode: EditMode
+          checkName: EditMode Test Results
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Test Results (EditMode)
+          path: ${{ steps.tests.outputs.artifactsPath }}
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Coverage Results
+          path: ${{ steps.tests.outputs.coveragePath }}
