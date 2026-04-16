@@ -2,7 +2,36 @@
 
 **[English](README.md)**
 
-プラグイン可能なフレームフィルター、ハイライトストリップ、マーク済みフレーム収集機能を備えた、Unity Editor向け高機能CPUプロファイラーモジュールです。
+プラグイン可能なフレームフィルター、ハイライトストリップ、AI駆動プロファイリング自動化、マーク済みフレーム収集機能を備えた、Unity Editor向け高機能CPUプロファイラーモジュールです。
+
+![SpikeTrap — フィルターストリップと階層ビューによるスパイク検出](Documentation~/spike-detection-overview.png)
+
+## なぜ SpikeTrap？
+
+Unityの標準CPUモジュールは**リングバッファ**方式 — 直近300〜2000フレームのみ保持し、古いフレームは自動的に破棄されます。60fpsで5〜33秒分の履歴しかありません。SpikeTrapはこれを**選択的キャプチャ**に置き換えます。フィルターにマッチしたフレームだけを保持するため、数分〜数時間のプロファイリングでもデータを失いません。
+
+### SpikeTrap vs. 標準CPUモジュール
+
+| | 標準CPUモジュール | SpikeTrap |
+|---|---|---|
+| **フレーム保持** | リングバッファ（300〜2000フレーム）— 古いフレームは上書き | 選択的: マッチしたフレームのみ保持、セッション長の制限なし |
+| **10分 @ 60fps**（36,000フレーム） | 直近300〜2000のみ保持、95%以上を喪失 | 重要な〜20スパイクのみを保持 |
+| **レアスパイク（1/10,000）** | 確認前にほぼ確実に上書きされる | フィルターが自動的にキャプチャ |
+| **フィルター種別** | 組み込みなし | Spike（CPU時間）、GC（アロケーション量）、Search（マーカー名）、カスタム |
+| **視覚インジケーター** | なし | フィルターごとの色分けハイライトストリップ + 前後ナビゲーション |
+| **フィルター合成** | N/A | Match Any（OR）/ Match All（AND）+ 結果ストリップ |
+| **自動化API** | 低レベルの `ProfilerDriver` + `HierarchyFrameDataView` — フレーム単位の走査、マーカーID手動解決 | `SpikeTrapAPI` — 収集開始→待機→保存→分析、マーカー名解決済み |
+| **AIコードファースト** | バッファ上書き前に常時ポーリングが必要 | `StartCollecting()` → 待機 → `StopCollectingAndSave()` → `GetSpikeFrames()` |
+| **出力形式** | 標準 `.data`（全フレーム、ローリング） | 標準 `.data`（マッチフレームのみ、マージ可能） |
+| **階層ビュー** | 組み込み | 継承 — 同じ階層ビュー、同じ詳細カラム |
+
+### 選択的キャプチャの仕組み
+
+標準プロファイラーは全フレームを固定サイズのリングバッファに記録します。バッファが一杯になると最も古いフレームは永久に失われます。
+
+SpikeTrapは同じネイティブプロファイラーのデータストリームにフックし、各フレームをアクティブなフィルターでリアルタイム評価します。マッチしたフレーム（スパイク閾値超過、GCアロケーション過大、特定マーカー検出）のみが一時 `.data` ファイルに保存されます。セッション終了時にマッチフレームを1つのファイルにマージします。
+
+つまり、360,000フレームを生成する100分間のプロファイリングセッションでも、保存されるのは50フレーム程度のスパイクのみ — 各フレームにフルコールスタック付きで、すぐに分析可能です。
 
 ## 機能
 
@@ -15,6 +44,8 @@
 | **Spike** | CPU時間が閾値を超えるフレーム | ms / s | 緑 |
 | **GC** | GCアロケーションが閾値を超えるフレーム | KB / MB | 赤 |
 | **Search** | 指定した名前のプロファイラーサンプルを含むフレーム（大文字小文字不問） | — | オレンジ |
+
+![フィルターストリップによるスパイクとGCのライブ検出](Documentation~/filter-strips-live.png)
 
 ### Match Any / Match All
 
@@ -38,6 +69,8 @@
 2. **Collect** ボタンを押す — チャートと詳細エリアに「Collecting...」オーバーレイを表示
 3. マッチしたフレームが順次テンプファイルに保存
 4. **Save (N)** で収集フレームを1つの `.data` ファイルに統合保存、または **Stop** で保存せず終了
+
+![Collect modeオーバーレイ](Documentation~/collect-mode.png)
 
 ### スクリーンショットプレビュー
 
@@ -72,6 +105,22 @@ static class MyFilterRegistration
         CpuUsageBridgeDetailsViewController.RegisterCustomFilterFactory(() => new MyFilter());
     }
 }
+```
+
+### スクリプティングAPI
+
+`SpikeTrapAPI` はAI駆動プロファイリング自動化のための静的メソッドを提供します:
+
+```csharp
+using SpikeTrap;
+
+SpikeTrapAPI.StartCollecting(spikeThresholdMs: 33f);
+// ... ゲーム実行中、スパイクが自動キャプチャ ...
+SpikeTrapAPI.StopCollectingAndSave("/path/to/spikes.data");
+
+FrameSummary[] spikes = SpikeTrapAPI.GetSpikeFrames(33f);
+foreach (var s in spikes)
+    Debug.Log(s); // "Frame 296: 2038.40ms, GC 5.7KB | NavMeshManager=1953.89ms, ..."
 ```
 
 ## 要件

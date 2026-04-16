@@ -8,6 +8,33 @@ An enhanced CPU profiler module for Unity Editor with pluggable frame filters, v
 
 ![SpikeTrap — spike detection with filter strips and hierarchy view](Documentation~/spike-detection-overview.png)
 
+## Why SpikeTrap?
+
+Unity's built-in CPU module is a **rolling buffer** — it keeps the last 300-2000 frames and silently discards everything older. At 60fps that's 5-33 seconds of history. SpikeTrap replaces this with **selective capture**: only frames that match your filters are kept, so you can profile for minutes or hours without losing data.
+
+### SpikeTrap vs. Native CPU Module
+
+| | Native CPU Module | SpikeTrap |
+|---|---|---|
+| **Frame retention** | Rolling buffer (300-2000 frames) — old frames overwritten | Selective: only matched frames kept, no limit on session length |
+| **10 min @ 60fps** (36,000 frames) | Keeps last 300-2000, loses 95%+ | Keeps only the ~20 spikes that matter |
+| **Rare spike (1 in 10,000)** | Almost certainly overwritten before you see it | Captured automatically by filter |
+| **Filter types** | None built-in | Spike (CPU time), GC (alloc size), Search (marker name), custom |
+| **Visual indicators** | None | Color-coded highlight strips per filter with prev/next navigation |
+| **Filter composition** | N/A | Match Any (OR) / Match All (AND) with result strip |
+| **Automation API** | Low-level `ProfilerDriver` + `HierarchyFrameDataView` — frame-by-frame traversal, manual marker ID resolution | `SpikeTrapAPI` — fire-and-forget collection, pre-sorted results, marker names resolved |
+| **AI code-first profiling** | Must poll constantly before buffer overwrites data | `StartCollecting()` → wait → `StopCollectingAndSave()` → `GetSpikeFrames()` |
+| **Output format** | Standard `.data` (all frames, rolling) | Standard `.data` (matched frames only, mergeable) |
+| **Hierarchy view** | Built-in | Inherited — same hierarchy, same detail columns |
+
+### How Selective Capture Works
+
+The native profiler records every frame into a fixed-size ring buffer. When the buffer fills, the oldest frame is gone forever.
+
+SpikeTrap hooks into the same native profiler data stream but evaluates each frame against your active filters in real-time. Only frames that match (spike threshold exceeded, GC allocation too high, specific marker found) are saved to temporary `.data` files. At the end of a session, matched frames are merged into a single file.
+
+This means a 100-minute profiling session that produces 360,000 frames might save only 50 spike frames — each one with full call-stack detail, ready for analysis.
+
 ## Features
 
 ### Frame Filters

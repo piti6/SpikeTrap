@@ -704,6 +704,9 @@ namespace SpikeTrap
             int loadedCount = ProfilerDriver.lastFrameIndex - ProfilerDriver.firstFrameIndex + 1;
             ProfilerUserSettings.frameCount = Mathf.Clamp(Mathf.Max(m_DefaultFrameHistoryLength, loadedCount + 10), 1, 2000);
 
+            // Re-enable profiler after ClearAllFrames to restore recording buffer
+            ProfilerDriver.enabled = true;
+
             // Invalidate shared frame data cache
             InvalidateAllCaches();
             ProfilerWindow.Repaint();
@@ -1454,6 +1457,27 @@ namespace SpikeTrap
             UpdatePauseCallbackSubscription();
         }
 
+        internal void StopCollectingInternal()
+        {
+            if (!m_SaveMarkedOnly) return;
+            m_SaveMarkedOnly = false;
+            EditorPrefs.SetBool(k_SaveMarkedOnlyKey, false);
+            if (m_PauseCallbackSubscribed)
+            {
+                ProfilerDriver.NewProfilerFrameRecorded -= OnNewProfilerFrame;
+                m_PauseCallbackSubscribed = false;
+            }
+            ProfilerUserSettings.frameCount = m_DefaultFrameHistoryLength;
+
+            // Clean up temp files
+            foreach (var f in m_MarkedFrameTempFiles)
+            {
+                try { if (System.IO.File.Exists(f)) System.IO.File.Delete(f); } catch { }
+            }
+            m_MarkedFrameTempFiles.Clear();
+            ProfilerWindow.Repaint();
+        }
+
         internal bool SaveMergedMarkedFramesToPath(string savePath)
         {
             m_SaveMarkedOnly = false;
@@ -1501,6 +1525,9 @@ namespace SpikeTrap
 
             int loadedCount = ProfilerDriver.lastFrameIndex - ProfilerDriver.firstFrameIndex + 1;
             ProfilerUserSettings.frameCount = Mathf.Clamp(Mathf.Max(m_DefaultFrameHistoryLength, loadedCount + 10), 1, 2000);
+
+            // Re-enable profiler after ClearAllFrames to restore recording buffer
+            ProfilerDriver.enabled = true;
 
             ProfilerWindow.Repaint();
             Debug.Log($"[SpikeTrap] Saved {tempFiles.Count} marked frame snapshots to: {savePath}");

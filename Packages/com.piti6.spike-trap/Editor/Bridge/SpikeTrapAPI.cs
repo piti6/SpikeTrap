@@ -118,6 +118,26 @@ namespace SpikeTrap
         }
 
         /// <summary>
+        /// Stop collecting without saving. Discards captured frames and restores profiler buffer.
+        /// </summary>
+        /// <returns>True if stopped. False if not collecting or no active instance.</returns>
+        public static bool StopCollecting()
+        {
+            var inst = CpuUsageBridgeDetailsViewController.s_ActiveInstance;
+            if (inst == null)
+            {
+                Debug.LogWarning("[SpikeTrapAPI] No active profiler module view.");
+                return false;
+            }
+
+            if (!inst.IsCollectingMarkedFrames)
+                return false;
+
+            inst.StopCollectingInternal();
+            return true;
+        }
+
+        /// <summary>
         /// Stop collecting and save matched frames to a .data file.
         /// </summary>
         /// <param name="savePath">Absolute file path to save the .data file.</param>

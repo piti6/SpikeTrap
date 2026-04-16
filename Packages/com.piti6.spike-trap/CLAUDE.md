@@ -28,6 +28,9 @@ SpikeTrapAPI.SetFilterThresholds(spikeThresholdMs: 16f);
 // Stop and save collected frames
 SpikeTrapAPI.StopCollectingAndSave("/path/to/spikes.data");
 
+// Stop collecting without saving (discard captured frames)
+SpikeTrapAPI.StopCollecting();
+
 // Analyze: get all frames exceeding threshold, sorted worst-first
 FrameSummary[] spikes = SpikeTrapAPI.GetSpikeFrames(33f);
 
