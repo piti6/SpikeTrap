@@ -26,6 +26,9 @@
 # Visual Studio cache directory
 .vs/
 
+# JetBrains Rider
+.idea/
+
 # Gradle cache directory
 .gradle/
 
@@ -70,3 +73,22 @@ crashlytics-build.properties
 # Temporary auto-generated Android Assets
 /[Aa]ssets/[Ss]treamingAssets/aa.meta
 /[Aa]ssets/[Ss]treamingAssets/aa/*
+
+# macOS
+.DS_Store
+
+# Profiler data files
+*.data
+
+# Unity crash dumps
+mono_crash*
+
+# AI tool configs (user-local)
+/.claude/settings.local.json
+/.claude/worktrees/
+/.claude/projects/
+/.claude/todos/
+/.claude/skills/uloop-*/
+/.cursor/
+/.mcp.json
+/.uloop/
