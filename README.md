@@ -15,7 +15,7 @@ Unity's built-in CPU module is a **rolling buffer** — it keeps the last 300-20
 SpikeTrap adds two layers on top:
 
 - **Recording mode** — the standard profiler keeps running, but SpikeTrap adds filter highlight strips, prev/next navigation, pause on match, and log on match. You can spot spikes at a glance without changing how recording works.
-- **Collect mode** — set your filter thresholds, press **Collect**, and just play your game. SpikeTrap captures only the frames that matter in the background. No need to stare at the profiler — come back when you're done and save the results.
+- **Collect mode** — set your filter thresholds, press **Collect**, and just play your game. SpikeTrap captures only the frames that matter in the background. No need to stare at the profiler — when you're done, press **Save** to merge matched frames into a single `.data` file.
 
 ### Comparison
 

@@ -76,6 +76,18 @@ If the `/spike-trap` slash command is available, use it directly:
 
 If the slash command is not available, read the SKILL.md file for the full step-by-step workflow instructions including play mode control, collection, saving, and analysis.
 
+### QA Test Skill
+
+Comprehensive QA test suite at `.claude/skills/qa-test/SKILL.md`.
+
+```
+/qa-test full          — all 10 suites (52 tests), requires play mode + Profiler window
+/qa-test api-only      — API contract + analysis tests only, no play mode
+/qa-test suite 3       — run only a specific suite
+```
+
+Covers: API contracts, collect lifecycle, filter accuracy, threshold updates, discard flow, domain reload survival, marker resolution, UI verification, and data completeness. Uses ProfilerStressTest scene for reproducible spike/GC/marker generation.
+
 ### AI Profiling Workflow (Manual)
 
 1. Open Unity Profiler window (required for the module view to be active)

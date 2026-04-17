@@ -292,6 +292,7 @@ namespace SpikeTrap.Editor
             m_TimelineGUI = new ProfilerTimelineGUI();
             var cpuModule = ProfilerWindow.GetProfilerModule<CPUProfilerModule>(UnityEngine.Profiling.ProfilerArea.CPU);
             m_TimelineGUI.OnEnable(cpuModule, ProfilerWindow, false);
+            m_IsCollecting = EditorPrefs.GetBool(k_IsCollectingKey, false);
             if (IsCollectingMarkedFrames)
             {
                 m_DefaultFrameHistoryLength = Mathf.Clamp(EditorPrefs.GetInt(k_DefaultFrameHistoryKey, ProfilerUserSettings.frameCount), 1, 2000);
@@ -1392,10 +1393,15 @@ namespace SpikeTrap.Editor
 
         // ─── Internal API for programmatic control ──────────────────────────
 
+        bool m_IsCollecting;
         internal bool IsCollectingMarkedFrames
         {
-            get => EditorPrefs.GetBool(k_IsCollectingKey, false);
-            set => EditorPrefs.SetBool(k_IsCollectingKey, value);
+            get => m_IsCollecting;
+            set
+            {
+                m_IsCollecting = value;
+                EditorPrefs.SetBool(k_IsCollectingKey, value);
+            }
         }
 
         internal void StartCollectingInternal()
@@ -1458,8 +1464,6 @@ namespace SpikeTrap.Editor
             ExitCollectMode();
 
             ProfilerWindow.SetRecordingEnabled(false);
-            if (EditorApplication.isPlaying && !EditorApplication.isPaused)
-                EditorApplication.isPaused = true;
 
             if (m_MarkedFrameTempFiles.Count == 0)
             {
@@ -1500,10 +1504,9 @@ namespace SpikeTrap.Editor
                 }
 
                 ProfilerDriver.LoadProfile(savePath, false);
-
                 InvalidateAllCaches();
                 ProfilerWindow.Repaint();
-                Debug.Log($"[SpikeTrap] Saved {tempFiles.Count} marked frame snapshots to: {savePath}");
+                Debug.Log($"[SpikeTrap] Saved {tempFiles.Count} snapshots to {savePath}");
             }
             EditorApplication.delayCall += DelayedMerge;
             return true;

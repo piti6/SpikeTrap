@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using UnityEditor;
+using UnityEditorInternal;
 using UnityEngine;
 
 namespace SpikeTrap.Editor
@@ -15,6 +17,28 @@ namespace SpikeTrap.Editor
 
         /// <summary>Is the Profiler module view currently active?</summary>
         public static bool IsViewActive => SpikeTrapViewController.s_ActiveInstance != null;
+
+        /// <summary>
+        /// Open the Profiler window and select the module identified by <paramref name="moduleType"/>.
+        /// Idempotent. Requires a display — fails in <c>-batchmode -nographics</c>.
+        /// </summary>
+        public static bool EnsureProfilerWindowOpen(Type moduleType)
+        {
+            if (moduleType == null)
+                return false;
+
+            var window = EditorWindow.GetWindow<ProfilerWindow>();
+            if (window == null)
+                return false;
+
+            var module = window.GetProfilerModuleByType(moduleType);
+            if (module == null)
+                return false;
+
+            window.selectedModule = module;
+            window.Show();
+            return true;
+        }
 
         /// <summary>Is the controller currently in Collect mode?</summary>
         public static bool IsCollecting

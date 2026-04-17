@@ -14,6 +14,13 @@ namespace SpikeTrap.Editor
         /// <summary>Is the Profiler module view currently active?</summary>
         public static bool IsViewActive => SpikeTrapAPIBridge.IsViewActive;
 
+        /// <summary>
+        /// Open the Profiler window and select the SpikeTrap module. Idempotent.
+        /// Requires a display — fails in <c>-batchmode -nographics</c>.
+        /// </summary>
+        public static bool EnsureProfilerWindowOpen()
+            => SpikeTrapAPIBridge.EnsureProfilerWindowOpen(typeof(SpikeTrapProfilerModule));
+
         /// <summary>Is the controller currently in Collect mode?</summary>
         public static bool IsCollecting => SpikeTrapAPIBridge.IsCollecting;
 
