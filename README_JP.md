@@ -163,7 +163,7 @@ using SpikeTrap.Editor;
 
 SpikeTrapApi.StartCollecting(spikeThresholdMs: 33f);
 // ... ゲーム実行中、スパイクが自動キャプチャ ...
-SpikeTrapApi.StopCollectingAndSave("/path/to/spikes.data");
+await SpikeTrapApi.StopCollectingAndSaveAsync("/path/to/spikes.data");
 
 FrameSummary[] spikes = SpikeTrapApi.GetSpikeFrames(33f);
 foreach (var s in spikes)

@@ -25,7 +25,10 @@ SpikeTrapApi.StartCollecting(spikeThresholdMs: 16.6f, gcThresholdKB: 100f);
 // Update thresholds while collecting (-1 = don't change, 0 = disable)
 SpikeTrapApi.SetFilterThresholds(spikeThresholdMs: 16f);
 
-// Stop and save collected frames
+// Stop and save collected frames — await completion (file on disk when Task resolves)
+bool saved = await SpikeTrapApi.StopCollectingAndSaveAsync("/path/to/spikes.data");
+
+// Fire-and-forget variant — returns immediately, save completes later
 SpikeTrapApi.StopCollectingAndSave("/path/to/spikes.data");
 
 // Stop collecting without saving (discard captured frames)
@@ -75,6 +78,18 @@ If the `/spike-trap` slash command is available, use it directly:
 ```
 
 If the slash command is not available, read the SKILL.md file for the full step-by-step workflow instructions including play mode control, collection, saving, and analysis.
+
+### QA Test Skill
+
+Comprehensive QA test suite at `.claude/skills/qa-test/SKILL.md`.
+
+```
+/qa-test full          — all 10 suites (52 tests), requires play mode + Profiler window
+/qa-test api-only      — API contract + analysis tests only, no play mode
+/qa-test suite 3       — run only a specific suite
+```
+
+Covers: API contracts, collect lifecycle, filter accuracy, threshold updates, discard flow, domain reload survival, marker resolution, UI verification, and data completeness. Uses ProfilerStressTest scene for reproducible spike/GC/marker generation.
 
 ### AI Profiling Workflow (Manual)
 

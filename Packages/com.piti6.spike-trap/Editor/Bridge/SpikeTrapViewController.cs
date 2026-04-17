@@ -106,9 +106,8 @@ namespace SpikeTrap.Editor
         bool m_PauseCallbackSubscribed;
 
         // Save-only-marked-frames
-        const string k_SaveMarkedOnlyKey = "SpikeTrap.SaveMarkedOnly";
         const string k_DefaultFrameHistoryKey = "SpikeTrap.DefaultFrameHistory";
-        bool m_SaveMarkedOnly;
+        const string k_IsCollectingKey = "SpikeTrap.IsCollecting";
         readonly List<string> m_MarkedFrameTempFiles = new List<string>();
         int m_DefaultFrameHistoryLength;
         const int k_SaveMarkedBufferSize = 1;
@@ -196,7 +195,7 @@ namespace SpikeTrap.Editor
 
             m_ChartOverlay.style.top = EditorStyles.toolbar.fixedHeight;
 
-            m_ChartOverlay.visible = m_SaveMarkedOnly;
+            m_ChartOverlay.visible = IsCollectingMarkedFrames;
             chartContainer.Add(m_ChartOverlay);
         }
 
@@ -293,8 +292,8 @@ namespace SpikeTrap.Editor
             m_TimelineGUI = new ProfilerTimelineGUI();
             var cpuModule = ProfilerWindow.GetProfilerModule<CPUProfilerModule>(UnityEngine.Profiling.ProfilerArea.CPU);
             m_TimelineGUI.OnEnable(cpuModule, ProfilerWindow, false);
-            m_SaveMarkedOnly = EditorPrefs.GetBool(k_SaveMarkedOnlyKey, false);
-            if (m_SaveMarkedOnly)
+            m_IsCollecting = EditorPrefs.GetBool(k_IsCollectingKey, false);
+            if (IsCollectingMarkedFrames)
             {
                 m_DefaultFrameHistoryLength = Mathf.Clamp(EditorPrefs.GetInt(k_DefaultFrameHistoryKey, ProfilerUserSettings.frameCount), 1, 2000);
                 ProfilerUserSettings.frameCount = k_SaveMarkedBufferSize;
@@ -344,7 +343,7 @@ namespace SpikeTrap.Editor
             // Filter strips — always visible so thresholds can be adjusted while collecting
             DrawCombinedHighlightStrip(rect);
 
-            if (m_SaveMarkedOnly)
+            if (IsCollectingMarkedFrames)
             {
                 DrawCollectingOverlay();
                 return;
@@ -378,8 +377,8 @@ namespace SpikeTrap.Editor
         void UpdateChartOverlay()
         {
             if (m_ChartOverlay == null) return;
-            m_ChartOverlay.visible = m_SaveMarkedOnly;
-            if (m_SaveMarkedOnly && m_ChartOverlayLabel != null)
+            m_ChartOverlay.visible = IsCollectingMarkedFrames;
+            if (IsCollectingMarkedFrames && m_ChartOverlayLabel != null)
             {
                 int count = m_MarkedFrameTempFiles.Count;
                 m_ChartOverlayLabel.text = count > 0
@@ -497,16 +496,25 @@ namespace SpikeTrap.Editor
 
             GUILayout.FlexibleSpace();
 
-            // --- Collect / Save marked (state-dependent button) ---
-            if (m_SaveMarkedOnly)
+            // --- Collect / Save / Stop ---
+            // All state mutations deferred via delayCall to avoid IMGUI layout corruption
+            if (IsCollectingMarkedFrames)
             {
                 int collected = m_MarkedFrameTempFiles.Count;
-                var label = collected > 0
-                    ? EditorGUIUtility.TrTextContent($"Save ({collected})", "Stop collecting and save marked frames to a .data file.")
-                    : EditorGUIUtility.TrTextContent("Stop", "Stop collecting marked frames.");
-                if (GUILayout.Button(label, EditorStyles.toolbarButton))
+                if (collected > 0)
                 {
-                    SaveMergedMarkedFrames();
+                    if (GUILayout.Button(
+                        EditorGUIUtility.TrTextContent($"Save ({collected})", "Stop collecting and save marked frames to a .data file."),
+                        EditorStyles.toolbarButton))
+                    {
+                        EditorApplication.delayCall += SaveMergedMarkedFrames;
+                    }
+                }
+                if (GUILayout.Button(
+                    EditorGUIUtility.TrTextContent("Stop", "Stop collecting without saving."),
+                    EditorStyles.toolbarButton))
+                {
+                    EditorApplication.delayCall += StopCollectingInternal;
                 }
             }
             else
@@ -515,12 +523,7 @@ namespace SpikeTrap.Editor
                     EditorGUIUtility.TrTextContent("Collect", "Start collecting frames matching active filters."),
                     EditorStyles.toolbarButton))
                 {
-                    m_SaveMarkedOnly = true;
-                    EditorPrefs.SetBool(k_SaveMarkedOnlyKey, true);
-                    m_DefaultFrameHistoryLength = ProfilerUserSettings.frameCount;
-                    EditorPrefs.SetInt(k_DefaultFrameHistoryKey, m_DefaultFrameHistoryLength);
-                    ProfilerUserSettings.frameCount = k_SaveMarkedBufferSize;
-                    UpdatePauseCallbackSubscription();
+                    EditorApplication.delayCall += StartCollectingInternal;
                 }
             }
 
@@ -528,14 +531,10 @@ namespace SpikeTrap.Editor
             if (m_MarkedFrameTempFiles.Count > 0)
             {
                 if (GUILayout.Button(
-                    EditorGUIUtility.TrTextContent("Clear", "Delete all collected marked frame temp files."),
+                    EditorGUIUtility.TrTextContent($"Clear ({m_MarkedFrameTempFiles.Count})", "Delete all collected marked frame temp files."),
                     EditorStyles.toolbarButton))
                 {
-                    foreach (var f in m_MarkedFrameTempFiles)
-                    {
-                        try { if (System.IO.File.Exists(f)) System.IO.File.Delete(f); } catch { }
-                    }
-                    m_MarkedFrameTempFiles.Clear();
+                    DeleteTempFiles();
                 }
             }
 
@@ -632,11 +631,6 @@ namespace SpikeTrap.Editor
             // Clear stale screenshot when a new recording starts
             if (recording)
                 ClearScreenshotCache();
-
-            if (!recording && m_SaveMarkedOnly && m_MarkedFrameTempFiles.Count > 0)
-            {
-                EditorApplication.delayCall += SaveMergedMarkedFrames;
-            }
         }
 
         void ClearScreenshotCache()
@@ -651,17 +645,7 @@ namespace SpikeTrap.Editor
 
         void SaveMergedMarkedFrames()
         {
-            m_SaveMarkedOnly = false;
-            EditorPrefs.SetBool(k_SaveMarkedOnlyKey, false);
-            if (m_PauseCallbackSubscribed)
-            {
-                ProfilerDriver.NewProfilerFrameRecorded -= OnNewProfilerFrame;
-                m_PauseCallbackSubscribed = false;
-            }
-
-            ProfilerWindow.SetRecordingEnabled(false);
-            if (EditorApplication.isPlaying && !EditorApplication.isPaused)
-                EditorApplication.isPaused = true;
+            ExitCollectMode();
 
             if (m_MarkedFrameTempFiles.Count == 0)
             {
@@ -672,47 +656,12 @@ namespace SpikeTrap.Editor
             var savePath = EditorUtility.SaveFilePanel("Save Marked Frames", "", "marked_profile", "data");
             if (string.IsNullOrEmpty(savePath))
             {
+                DeleteTempFiles();
                 ProfilerUserSettings.frameCount = m_DefaultFrameHistoryLength;
                 return;
             }
-            savePath = System.IO.Path.GetFullPath(savePath);
 
-            var tempFiles = new List<string>(m_MarkedFrameTempFiles);
-
-            ProfilerUserSettings.frameCount = 2000;
-            ProfilerDriver.ClearAllFrames();
-
-            bool first = true;
-            foreach (var tempFile in tempFiles)
-            {
-                if (!System.IO.File.Exists(tempFile))
-                    continue;
-                ProfilerDriver.LoadProfile(tempFile, !first);
-                first = false;
-            }
-
-            ProfilerDriver.SaveProfile(savePath);
-
-            foreach (var tempFile in tempFiles)
-            {
-                try { System.IO.File.Delete(tempFile); } catch { }
-            }
-            m_MarkedFrameTempFiles.Clear();
-
-            ProfilerUserSettings.frameCount = 2000;
-            ProfilerDriver.LoadProfile(savePath, false);
-
-            int loadedCount = ProfilerDriver.lastFrameIndex - ProfilerDriver.firstFrameIndex + 1;
-            ProfilerUserSettings.frameCount = Mathf.Clamp(Mathf.Max(m_DefaultFrameHistoryLength, loadedCount + 10), 1, 2000);
-
-            // Re-enable profiler after ClearAllFrames to restore recording buffer
-            ProfilerDriver.enabled = true;
-
-            // Invalidate shared frame data cache
-            InvalidateAllCaches();
-            ProfilerWindow.Repaint();
-
-            Debug.Log($"[SpikeTrap] Saved {tempFiles.Count} marked frame snapshots to: {savePath}");
+            _ = SaveMergedMarkedFramesToPathAsync(savePath);
         }
 
         // ─── Shared frame data cache & filter evaluation ────────────────────
@@ -1166,7 +1115,7 @@ namespace SpikeTrap.Editor
         {
             bool anyActive = AnyFilterActive();
             bool needPauseOrLog = (m_PauseOnFilter || m_LogOnFilter) && anyActive;
-            bool shouldSubscribe = needPauseOrLog || m_SaveMarkedOnly;
+            bool shouldSubscribe = needPauseOrLog || IsCollectingMarkedFrames;
 
             if (shouldSubscribe && !m_PauseCallbackSubscribed)
             {
@@ -1184,7 +1133,7 @@ namespace SpikeTrap.Editor
         {
             bool isMarked = IsFrameMatched(frameIndex);
 
-            if (m_SaveMarkedOnly && isMarked)
+            if (IsCollectingMarkedFrames && isMarked)
             {
                 string tempDir = System.IO.Path.Combine(Application.temporaryCachePath, "MarkedFrames");
                 if (!System.IO.Directory.Exists(tempDir))
@@ -1444,96 +1393,136 @@ namespace SpikeTrap.Editor
 
         // ─── Internal API for programmatic control ──────────────────────────
 
-        internal bool IsCollectingMarkedFrames => m_SaveMarkedOnly;
+        bool m_IsCollecting;
+        internal bool IsCollectingMarkedFrames
+        {
+            get => m_IsCollecting;
+            set
+            {
+                m_IsCollecting = value;
+                EditorPrefs.SetBool(k_IsCollectingKey, value);
+            }
+        }
 
         internal void StartCollectingInternal()
         {
-            if (m_SaveMarkedOnly) return;
-            m_SaveMarkedOnly = true;
-            EditorPrefs.SetBool(k_SaveMarkedOnlyKey, true);
+            if (IsCollectingMarkedFrames) return;
             m_DefaultFrameHistoryLength = ProfilerUserSettings.frameCount;
             EditorPrefs.SetInt(k_DefaultFrameHistoryKey, m_DefaultFrameHistoryLength);
+            ProfilerDriver.ClearAllFrames();
             ProfilerUserSettings.frameCount = k_SaveMarkedBufferSize;
             m_FiltersDirty = true;
-            UpdatePauseCallbackSubscription();
+            
+            // frameCount change may not apply immediately — delay to let it settle
+            int delayFrames = 2;
+            void DelayedEnterCollectMode()
+            {
+                if (--delayFrames > 0)
+                {
+                    EditorApplication.delayCall += DelayedEnterCollectMode;
+                    return;
+                }
+                IsCollectingMarkedFrames = true;
+                UpdatePauseCallbackSubscription();
+            }
+            EditorApplication.delayCall += DelayedEnterCollectMode;
         }
 
-        internal void StopCollectingInternal()
+        /// Transition out of Collect mode: unsubscribe frame callback, restore state.
+        /// Does NOT delete temp files — caller decides whether to save or discard.
+        void ExitCollectMode()
         {
-            if (!m_SaveMarkedOnly) return;
-            m_SaveMarkedOnly = false;
-            EditorPrefs.SetBool(k_SaveMarkedOnlyKey, false);
+            if (!IsCollectingMarkedFrames) return;
+            IsCollectingMarkedFrames = false;
             if (m_PauseCallbackSubscribed)
             {
                 ProfilerDriver.NewProfilerFrameRecorded -= OnNewProfilerFrame;
                 m_PauseCallbackSubscribed = false;
             }
-            ProfilerUserSettings.frameCount = m_DefaultFrameHistoryLength;
+        }
 
-            // Clean up temp files
+        void DeleteTempFiles()
+        {
             foreach (var f in m_MarkedFrameTempFiles)
             {
                 try { if (System.IO.File.Exists(f)) System.IO.File.Delete(f); } catch { }
             }
             m_MarkedFrameTempFiles.Clear();
+        }
+
+        internal void StopCollectingInternal()
+        {
+            ExitCollectMode();
+            ProfilerUserSettings.frameCount = m_DefaultFrameHistoryLength;
+            DeleteTempFiles();
             ProfilerWindow.Repaint();
         }
 
-        internal bool SaveMergedMarkedFramesToPath(string savePath)
+        internal System.Threading.Tasks.Task<bool> SaveMergedMarkedFramesToPathAsync(string savePath)
         {
             savePath = System.IO.Path.GetFullPath(savePath);
-            m_SaveMarkedOnly = false;
-            EditorPrefs.SetBool(k_SaveMarkedOnlyKey, false);
-            if (m_PauseCallbackSubscribed)
-            {
-                ProfilerDriver.NewProfilerFrameRecorded -= OnNewProfilerFrame;
-                m_PauseCallbackSubscribed = false;
-            }
+            ExitCollectMode();
 
             ProfilerWindow.SetRecordingEnabled(false);
-            if (EditorApplication.isPlaying && !EditorApplication.isPaused)
-                EditorApplication.isPaused = true;
 
             if (m_MarkedFrameTempFiles.Count == 0)
             {
                 ProfilerUserSettings.frameCount = m_DefaultFrameHistoryLength;
-                return false;
+                return System.Threading.Tasks.Task.FromResult(false);
             }
 
             var tempFiles = new List<string>(m_MarkedFrameTempFiles);
-
-            ProfilerUserSettings.frameCount = 2000;
-            ProfilerDriver.ClearAllFrames();
-
-            bool first = true;
-            foreach (var tempFile in tempFiles)
-            {
-                if (!System.IO.File.Exists(tempFile))
-                    continue;
-                ProfilerDriver.LoadProfile(tempFile, !first);
-                first = false;
-            }
-
-            ProfilerDriver.SaveProfile(savePath);
-
-            foreach (var tempFile in tempFiles)
-            {
-                try { System.IO.File.Delete(tempFile); } catch { }
-            }
             m_MarkedFrameTempFiles.Clear();
 
+            ProfilerDriver.ClearAllFrames();
             ProfilerUserSettings.frameCount = 2000;
-            ProfilerDriver.LoadProfile(savePath, false);
 
-            int loadedCount = ProfilerDriver.lastFrameIndex - ProfilerDriver.firstFrameIndex + 1;
-            ProfilerUserSettings.frameCount = Mathf.Clamp(Mathf.Max(m_DefaultFrameHistoryLength, loadedCount + 10), 1, 2000);
+            var tcs = new System.Threading.Tasks.TaskCompletionSource<bool>(
+                System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
 
-            // Re-enable profiler after ClearAllFrames to restore recording buffer
-            ProfilerDriver.enabled = true;
+            // frameCount + ClearAllFrames need a couple of frames to settle
+            int delayFrames = 2;
+            void DelayedMerge()
+            {
+                if (--delayFrames > 0)
+                {
+                    EditorApplication.delayCall += DelayedMerge;
+                    return;
+                }
 
-            ProfilerWindow.Repaint();
-            Debug.Log($"[SpikeTrap] Saved {tempFiles.Count} marked frame snapshots to: {savePath}");
-            return true;
+                try
+                {
+                    bool first = true;
+                    foreach (var tempFile in tempFiles)
+                    {
+                        if (!System.IO.File.Exists(tempFile))
+                            continue;
+                        ProfilerDriver.LoadProfile(tempFile, !first);
+                        first = false;
+                    }
+
+                    ProfilerDriver.SaveProfile(savePath);
+
+                    foreach (var tempFile in tempFiles)
+                    {
+                        try { System.IO.File.Delete(tempFile); } catch { }
+                    }
+
+                    ProfilerDriver.LoadProfile(savePath, false);
+                    InvalidateAllCaches();
+                    ProfilerWindow.Repaint();
+                    ProfilerUserSettings.frameCount = m_DefaultFrameHistoryLength;
+                    Debug.Log($"[SpikeTrap] Saved {tempFiles.Count} snapshots to {savePath}");
+                    tcs.TrySetResult(true);
+                }
+                catch (Exception e)
+                {
+                    ProfilerUserSettings.frameCount = m_DefaultFrameHistoryLength;
+                    tcs.TrySetException(e);
+                }
+            }
+            EditorApplication.delayCall += DelayedMerge;
+            return tcs.Task;
         }
 
         internal void MarkFiltersDirty() => m_FiltersDirty = true;
