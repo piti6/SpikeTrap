@@ -52,8 +52,8 @@ Tell the user profiling is running. Use ScheduleWakeup or repeated checks to wai
 ```csharp
 using SpikeTrap.Editor;
 string path = System.IO.Path.Combine(UnityEngine.Application.dataPath, "..", "spike-trap-capture.data");
-SpikeTrapApi.StopCollectingAndSave(path);
-return $"Saved to {path}";
+bool saved = await SpikeTrapApi.StopCollectingAndSaveAsync(path);
+return $"Saved={saved}, Path={path}";
 ```
 
 Then stop play mode with `mcp__uLoopMCP__control-play-mode` Action=Stop.
@@ -95,7 +95,8 @@ All calls go through `mcp__uLoopMCP__execute-dynamic-code`. Always include `usin
 | `SpikeTrapApi.CachedFrameCount` | Total cached frames |
 | `SpikeTrapApi.StartCollecting(spikeThresholdMs, gcThresholdKB)` | Begin collecting matched frames |
 | `SpikeTrapApi.StopCollecting()` | Stop collecting, discard captured frames |
-| `SpikeTrapApi.StopCollectingAndSave(path)` | Stop and save to .data file |
+| `SpikeTrapApi.StopCollectingAndSaveAsync(path)` | Stop and save; `await` for completion (file on disk when Task resolves) |
+| `SpikeTrapApi.StopCollectingAndSave(path)` | Fire-and-forget variant; returns immediately |
 | `SpikeTrapApi.SetFilterThresholds(spikeThresholdMs, gcThresholdKB)` | Update thresholds (-1=keep, 0=disable) |
 | `SpikeTrapApi.GetSpikeFrames(thresholdMs)` | Get all frames above threshold, sorted worst-first |
 | `SpikeTrapApi.GetCachedFrameSummaries()` | Get all cached frames for current session |
@@ -112,7 +113,7 @@ All calls go through `mcp__uLoopMCP__execute-dynamic-code`. Always include `usin
 
 ## Important Notes
 
-- The Profiler window must be open with SpikeTrap CPU module selected for StartCollecting/StopCollectingAndSave
+- The Profiler window must be open with SpikeTrap CPU module selected for StartCollecting/StopCollectingAndSaveAsync
 - GetSpikeFrames and GetCachedFrameSummaries work without an active view (reads static cache)
 - TopMarkerTimesMs are inclusive (include children) — may double-count nested markers
 - After stopping play mode, wait for domain reload before analyzing

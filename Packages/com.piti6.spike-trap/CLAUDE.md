@@ -25,7 +25,10 @@ SpikeTrapApi.StartCollecting(spikeThresholdMs: 16.6f, gcThresholdKB: 100f);
 // Update thresholds while collecting (-1 = don't change, 0 = disable)
 SpikeTrapApi.SetFilterThresholds(spikeThresholdMs: 16f);
 
-// Stop and save collected frames
+// Stop and save collected frames — await completion (file on disk when Task resolves)
+bool saved = await SpikeTrapApi.StopCollectingAndSaveAsync("/path/to/spikes.data");
+
+// Fire-and-forget variant — returns immediately, save completes later
 SpikeTrapApi.StopCollectingAndSave("/path/to/spikes.data");
 
 // Stop collecting without saving (discard captured frames)

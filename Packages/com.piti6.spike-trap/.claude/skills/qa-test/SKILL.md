@@ -121,15 +121,15 @@ return $"StopCollecting={result}, IsCollecting={SpikeTrapApi.IsCollecting}";
 
 **PASS**: Returns false (nothing to stop), IsCollecting=false. **FAIL**: exception or IsCollecting=true.
 
-### T2.5 — StopCollectingAndSave When Not Collecting
+### T2.5 — StopCollectingAndSaveAsync When Not Collecting
 
 ```csharp
 using SpikeTrap.Editor;
-bool result = SpikeTrapApi.StopCollectingAndSave("/tmp/should-not-exist.data");
-return $"StopCollectingAndSave={result}";
+bool result = await SpikeTrapApi.StopCollectingAndSaveAsync("/tmp/should-not-exist.data");
+return $"StopCollectingAndSaveAsync={result}";
 ```
 
-**PASS**: Returns false. **FAIL**: exception or returns true.
+**PASS**: Returns false (no active view / nothing to save). **FAIL**: exception or returns true.
 
 ### T2.6 — SetFilterThresholds When Not Collecting
 
@@ -209,18 +209,18 @@ return $"TempDir={tempDir}, TempFileCount={count}";
 
 **PASS**: TempFileCount > 0 (frames were captured to disk). **FAIL**: 0 temp files.
 
-### T3.8 — Stop and Save
+### T3.8 — Stop and Save (await completion)
 
 ```csharp
 using SpikeTrap.Editor;
 string path = System.IO.Path.Combine(UnityEngine.Application.dataPath, "..", "qa-test-capture.data");
-bool result = SpikeTrapApi.StopCollectingAndSave(path);
-return $"StopCollectingAndSave={result}, Path={path}";
+var sw = System.Diagnostics.Stopwatch.StartNew();
+bool result = await SpikeTrapApi.StopCollectingAndSaveAsync(path);
+sw.Stop();
+return $"StopCollectingAndSaveAsync={result}, ElapsedMs={sw.ElapsedMilliseconds}, Path={path}";
 ```
 
-**PASS**: Returns true. **FAIL**: false or exception.
-
-Wait 3 seconds for the deferred save to complete (clear buffer → 2-frame delay → load/merge/save).
+**PASS**: Returns true, file is fully written when the task completes (no external sleep needed). **FAIL**: false or exception.
 
 ### T3.9 — Verify Collecting Stopped
 

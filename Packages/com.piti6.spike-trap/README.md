@@ -122,8 +122,8 @@ using SpikeTrap.Editor;
 // Start collecting spike frames (>33ms)
 SpikeTrapApi.StartCollecting(spikeThresholdMs: 33f);
 
-// Stop and save matched frames
-SpikeTrapApi.StopCollectingAndSave("/path/to/spikes.data");
+// Stop and save matched frames (await to know when the file is on disk)
+await SpikeTrapApi.StopCollectingAndSaveAsync("/path/to/spikes.data");
 
 // Or stop without saving (discard captured frames)
 SpikeTrapApi.StopCollecting();

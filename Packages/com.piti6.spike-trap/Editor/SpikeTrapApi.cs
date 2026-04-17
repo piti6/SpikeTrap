@@ -46,11 +46,22 @@ namespace SpikeTrap.Editor
             => SpikeTrapAPIBridge.StopCollecting();
 
         /// <summary>
-        /// Stop collecting and save matched frames to a .data file.
+        /// Stop collecting and save matched frames to a .data file (fire-and-forget).
+        /// The save is deferred — the file is NOT on disk when this returns.
+        /// Use <see cref="StopCollectingAndSaveAsync"/> when completion matters.
         /// </summary>
         /// <param name="savePath">Absolute file path to save the .data file.</param>
-        public static bool StopCollectingAndSave(string savePath)
+        public static void StopCollectingAndSave(string savePath)
             => SpikeTrapAPIBridge.StopCollectingAndSave(savePath);
+
+        /// <summary>
+        /// Stop collecting and save matched frames to a .data file.
+        /// Task completes true when the file has been written, false if there
+        /// was nothing to save or no active view.
+        /// </summary>
+        /// <param name="savePath">Absolute file path to save the .data file.</param>
+        public static System.Threading.Tasks.Task<bool> StopCollectingAndSaveAsync(string savePath)
+            => SpikeTrapAPIBridge.StopCollectingAndSaveAsync(savePath);
 
         // ─── Analysis ───────────────────────────────────────────────────────
 

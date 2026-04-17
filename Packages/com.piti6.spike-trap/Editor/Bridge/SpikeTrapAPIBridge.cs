@@ -122,25 +122,35 @@ namespace SpikeTrap.Editor
 
         /// <summary>
         /// Stop collecting and save matched frames to a .data file.
+        /// Fire-and-forget — callers that need to know when the file is on disk
+        /// should use <see cref="StopCollectingAndSaveAsync"/> instead.
         /// </summary>
-        /// <param name="savePath">Absolute file path to save the .data file.</param>
-        /// <returns>True if frames were saved. False if no frames collected or no active instance.</returns>
-        public static bool StopCollectingAndSave(string savePath)
+        public static void StopCollectingAndSave(string savePath)
+        {
+            _ = StopCollectingAndSaveAsync(savePath);
+        }
+
+        /// <summary>
+        /// Stop collecting and save matched frames to a .data file.
+        /// Task completes true when the file is written to disk, false if
+        /// there was nothing to save or the view was not active.
+        /// </summary>
+        public static System.Threading.Tasks.Task<bool> StopCollectingAndSaveAsync(string savePath)
         {
             if (string.IsNullOrEmpty(savePath))
             {
                 Debug.LogWarning("[SpikeTrap] savePath is null or empty.");
-                return false;
+                return System.Threading.Tasks.Task.FromResult(false);
             }
 
             var inst = SpikeTrapViewController.s_ActiveInstance;
             if (inst == null)
             {
                 Debug.LogWarning("[SpikeTrap] No active profiler module view.");
-                return false;
+                return System.Threading.Tasks.Task.FromResult(false);
             }
 
-            return inst.SaveMergedMarkedFramesToPath(savePath);
+            return inst.SaveMergedMarkedFramesToPathAsync(savePath);
         }
 
         // ─── Analysis ───────────────────────────────────────────────────────

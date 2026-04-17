@@ -661,7 +661,7 @@ namespace SpikeTrap.Editor
                 return;
             }
 
-            SaveMergedMarkedFramesToPath(savePath);
+            _ = SaveMergedMarkedFramesToPathAsync(savePath);
         }
 
         // ─── Shared frame data cache & filter evaluation ────────────────────
@@ -1458,7 +1458,7 @@ namespace SpikeTrap.Editor
             ProfilerWindow.Repaint();
         }
 
-        internal bool SaveMergedMarkedFramesToPath(string savePath)
+        internal System.Threading.Tasks.Task<bool> SaveMergedMarkedFramesToPathAsync(string savePath)
         {
             savePath = System.IO.Path.GetFullPath(savePath);
             ExitCollectMode();
@@ -1468,7 +1468,7 @@ namespace SpikeTrap.Editor
             if (m_MarkedFrameTempFiles.Count == 0)
             {
                 ProfilerUserSettings.frameCount = m_DefaultFrameHistoryLength;
-                return false;
+                return System.Threading.Tasks.Task.FromResult(false);
             }
 
             var tempFiles = new List<string>(m_MarkedFrameTempFiles);
@@ -1476,6 +1476,9 @@ namespace SpikeTrap.Editor
 
             ProfilerDriver.ClearAllFrames();
             ProfilerUserSettings.frameCount = 2000;
+
+            var tcs = new System.Threading.Tasks.TaskCompletionSource<bool>(
+                System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
 
             // frameCount + ClearAllFrames need a couple of frames to settle
             int delayFrames = 2;
@@ -1487,29 +1490,39 @@ namespace SpikeTrap.Editor
                     return;
                 }
 
-                bool first = true;
-                foreach (var tempFile in tempFiles)
+                try
                 {
-                    if (!System.IO.File.Exists(tempFile))
-                        continue;
-                    ProfilerDriver.LoadProfile(tempFile, !first);
-                    first = false;
+                    bool first = true;
+                    foreach (var tempFile in tempFiles)
+                    {
+                        if (!System.IO.File.Exists(tempFile))
+                            continue;
+                        ProfilerDriver.LoadProfile(tempFile, !first);
+                        first = false;
+                    }
+
+                    ProfilerDriver.SaveProfile(savePath);
+
+                    foreach (var tempFile in tempFiles)
+                    {
+                        try { System.IO.File.Delete(tempFile); } catch { }
+                    }
+
+                    ProfilerDriver.LoadProfile(savePath, false);
+                    InvalidateAllCaches();
+                    ProfilerWindow.Repaint();
+                    ProfilerUserSettings.frameCount = m_DefaultFrameHistoryLength;
+                    Debug.Log($"[SpikeTrap] Saved {tempFiles.Count} snapshots to {savePath}");
+                    tcs.TrySetResult(true);
                 }
-
-                ProfilerDriver.SaveProfile(savePath);
-
-                foreach (var tempFile in tempFiles)
+                catch (Exception e)
                 {
-                    try { System.IO.File.Delete(tempFile); } catch { }
+                    ProfilerUserSettings.frameCount = m_DefaultFrameHistoryLength;
+                    tcs.TrySetException(e);
                 }
-
-                ProfilerDriver.LoadProfile(savePath, false);
-                InvalidateAllCaches();
-                ProfilerWindow.Repaint();
-                Debug.Log($"[SpikeTrap] Saved {tempFiles.Count} snapshots to {savePath}");
             }
             EditorApplication.delayCall += DelayedMerge;
-            return true;
+            return tcs.Task;
         }
 
         internal void MarkFiltersDirty() => m_FiltersDirty = true;
