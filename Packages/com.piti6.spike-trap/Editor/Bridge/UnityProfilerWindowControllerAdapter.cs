@@ -1,4 +1,5 @@
 using System;
+using Unity.Profiling;
 using Unity.Profiling.Editor;
 using UnityEditor;
 using UnityEditor.Profiling;
@@ -6,6 +7,7 @@ using UnityEditorInternal;
 
 namespace SpikeTrap.Editor
 {
+    [IgnoredByDeepProfiler]
     internal sealed class UnityProfilerWindowControllerAdapter
     {
         readonly ProfilerWindow m_Window;
