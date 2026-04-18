@@ -174,15 +174,13 @@ foreach (var s in spikes)
 
 SpikeTrapはコードファースト設計です。すべてのUI操作は `SpikeTrapApi` に対応するメソッドを持ち、結果はマーカー名解決済みでソート済みで返り、分析はUIを操作せずに静的キャッシュから行えます。AIエージェント（Claude Code、uLoop MCP、エディタスクリプト）から駆動しやすい構造になっています。
 
-パッケージには `Packages/com.piti6.spike-trap/.claude/skills/` 以下に2つのClaude Code skillが同梱されており、よく使うワークフローをスラッシュコマンドとして呼び出せます:
+パッケージには `Packages/com.piti6.spike-trap/.claude/skills/spike-trap/` 以下にClaude Code skillが同梱されており、主要ワークフローをスラッシュコマンドとして呼び出せます:
 
 - **`/spike-trap`** — エンドツーエンドのプロファイリングセッション: Play Mode開始 → マッチフレーム収集 → 停止 → `.data` 保存 → マーカー名別にトップボトルネックを要約。プロファイリングをスキップしてキャッシュ済みデータのみを分析する `analyze` モードも利用可能。
-- **`/qa-test`** — SpikeTrap QAスイート（10スイート・52テスト: APIコントラクト、Collectライフサイクル、フィルター精度、閾値更新、破棄フロー、ドメインリロード耐性、マーカー解決、UI検証）を実行。
 
 ```
 /spike-trap profile 33ms 10 seconds
 /spike-trap analyze 16ms
-/qa-test full
 ```
 
 APIがエージェントに向いている理由:

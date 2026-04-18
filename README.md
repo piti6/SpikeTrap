@@ -176,15 +176,13 @@ foreach (var s in spikes)
 
 SpikeTrap is designed code-first: every UI action has an `SpikeTrapApi` equivalent, results come back pre-sorted with marker names already resolved, and analysis works on the static cache without driving the UI. This makes it straightforward to drive from AI agents (Claude Code, uLoop MCP, editor scripts).
 
-The package ships two Claude Code skills under `Packages/com.piti6.spike-trap/.claude/skills/` that wrap common workflows as slash commands:
+The package ships a Claude Code skill under `Packages/com.piti6.spike-trap/.claude/skills/spike-trap/` that wraps the common workflow as a slash command:
 
 - **`/spike-trap`** — runs an end-to-end profiling session: enters play mode, collects matched frames, stops, saves to `.data`, and summarizes top bottlenecks by marker name. Also has an `analyze` mode that skips profiling and reports against already-cached data.
-- **`/qa-test`** — runs the SpikeTrap QA suite (52 tests across 10 suites: API contracts, collect lifecycle, filter accuracy, threshold updates, discard flow, domain reload survival, marker resolution, UI checks).
 
 ```
 /spike-trap profile 33ms 10 seconds
 /spike-trap analyze 16ms
-/qa-test full
 ```
 
 Why the API works well for agents:
