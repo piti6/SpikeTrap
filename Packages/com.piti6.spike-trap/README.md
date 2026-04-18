@@ -136,6 +136,26 @@ foreach (var s in spikes)
 
 See `CLAUDE.md` for full AI automation guide.
 
+## AI Agents & Claude Skills
+
+SpikeTrap is designed code-first: every UI action has an `SpikeTrapApi` equivalent, results come back pre-sorted with marker names already resolved, and analysis works on the static cache without driving the UI. This makes it straightforward to drive from AI agents (Claude Code, uLoop MCP, editor scripts).
+
+The package ships a Claude Code skill under `.claude/skills/spike-trap/` that wraps the common workflow as a slash command:
+
+- **`/spike-trap`** — runs an end-to-end profiling session: enters play mode, collects matched frames, stops, saves to `.data`, and summarizes top bottlenecks by marker name. Also has an `analyze` mode that skips profiling and reports against already-cached data.
+
+```
+/spike-trap profile 33ms 10 seconds
+/spike-trap analyze 16ms
+```
+
+Why the API works well for agents:
+
+- **Session-scoped, not frame-scoped** — `StartCollecting` / `StopCollectingAndSaveAsync` wrap a full capture. The agent starts, waits, stops — no frame-by-frame iteration or buffer management.
+- **Pre-sorted, pre-resolved results** — `GetSpikeFrames` returns frames worst-first with `TopMarkerNames` already resolved. No `ProfilerDriver` plumbing on the agent side.
+- **Analysis without UI interaction** — `GetSpikeFrames` and `GetCachedFrameSummaries` read the static cache, so agents can inspect a loaded `.data` file without driving the Profiler window.
+- **Session-aware cache** — reloading the same `.data` reuses its cache, so repeated `load → analyze` cycles don't re-extract.
+
 ## License
 
 MIT
