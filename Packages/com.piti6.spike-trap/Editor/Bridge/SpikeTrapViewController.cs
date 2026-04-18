@@ -227,8 +227,12 @@ namespace SpikeTrap.Editor
                     filter.Dispose();
                 m_Filters.Clear();
 
-                m_TimelineGUI?.Clear();
-                m_TimelineGUI = null;
+                if (m_TimelineGUI != null)
+                {
+                    m_TimelineGUI.selectionChanged -= OnTimelineSelectionChanged;
+                    m_TimelineGUI.Clear();
+                    m_TimelineGUI = null;
+                }
 
                 if (m_FrameDataHierarchyView != null)
                 {
@@ -288,10 +292,15 @@ namespace SpikeTrap.Editor
             m_CombineMode = (FilterCombineMode)EditorPrefs.GetInt(k_FilterCombineModeKey, 0);
             m_ViewMode = (DetailsViewMode)EditorPrefs.GetInt(k_ViewModeKey, 0);
 
-            // Initialize Unity's internal timeline view, passing the built-in CPU module for flow events
+            // Initialize Unity's internal timeline view, passing the built-in CPU module for flow events.
             m_TimelineGUI = new ProfilerTimelineGUI();
             var cpuModule = ProfilerWindow.GetProfilerModule<CPUProfilerModule>(UnityEngine.Profiling.ProfilerArea.CPU);
             m_TimelineGUI.OnEnable(cpuModule, ProfilerWindow, false);
+            // Must subscribe: ProfilerTimelineGUI invokes selectionChanged unconditionally on sample
+            // click; as a plain event Action<>, a null invocation list throws NRE from
+            // HandleNativeProfilerTimelineInput. The built-in CPU module relies on this same
+            // subscription. We don't route selection into any hierarchy, so the handler is empty.
+            m_TimelineGUI.selectionChanged += OnTimelineSelectionChanged;
             m_IsCollecting = EditorPrefs.GetBool(k_IsCollectingKey, false);
             if (IsCollectingMarkedFrames)
             {
@@ -448,6 +457,10 @@ namespace SpikeTrap.Editor
         {
             m_UpdateViewLive = live;
         }
+
+        // No-op: required only to keep ProfilerTimelineGUI.selectionChanged non-null.
+        // See subscription call in EnsureInitialized for why an empty handler is enough.
+        void OnTimelineSelectionChanged(UnityEditor.Profiling.ProfilerTimeSampleSelection _) { }
 
         void OnUserChangedThread(string groupName, string threadName, int threadIndex)
         {
