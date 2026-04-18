@@ -365,7 +365,9 @@ namespace SpikeTrap.Editor
 
             if (m_ViewMode == DetailsViewMode.Timeline && m_TimelineGUI != null)
             {
-                // Draw the hierarchy toolbar (with view type dropdown) then the timeline below
+                // Match Hierarchy mode's layout order: screenshot preview first, then the hierarchy toolbar
+                // (view-type dropdown etc.), then the timeline. Keeps the toolbar position consistent between modes.
+                DrawScreenshotPreview();
                 m_FrameDataHierarchyView.DrawToolbarOnly(frameData, fetchData, ref m_UpdateViewLive);
 
                 bool isDataAvailable = frameData != null && frameData.valid;
@@ -383,8 +385,8 @@ namespace SpikeTrap.Editor
                 {
                     int frameIndex = (int)ProfilerWindow.selectedFrameIndex;
                     if (frameIndex < 0) frameIndex = ProfilerDriver.lastFrameIndex;
-                    float toolbarBottom = GUILayoutUtility.GetLastRect().yMax;
-                    var timelineRect = new Rect(rect.x, toolbarBottom, rect.width, rect.yMax - toolbarBottom);
+                    float contentBottom = GUILayoutUtility.GetLastRect().yMax;
+                    var timelineRect = new Rect(rect.x, contentBottom, rect.width, rect.yMax - contentBottom);
                     if (timelineRect.height > 1f)
                         m_TimelineGUI.DoGUI(frameIndex, timelineRect, fetchData, ref m_UpdateViewLive);
                 }
