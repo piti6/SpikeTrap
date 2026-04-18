@@ -106,7 +106,7 @@ namespace SpikeTrap.Tests
 
         SearchFrameFilter CreateFilter(string searchTerm, params (int id, string name)[] markers)
         {
-            var filter = new SearchFrameFilter(() => { });
+            var filter = new SearchFrameFilter();
             filter.SetSearchString(searchTerm);
             foreach (var (id, name) in markers)
                 filter.OnMarkerDiscovered(id, name);
@@ -148,7 +148,7 @@ namespace SpikeTrap.Tests
         [Test]
         public void Matches_EmptySearch_IsInactive()
         {
-            var filter = new SearchFrameFilter(() => { });
+            var filter = new SearchFrameFilter();
             filter.SetSearchString("");
             Assert.IsFalse(filter.IsActive);
         }
@@ -202,7 +202,7 @@ namespace SpikeTrap.Tests
         [Test]
         public void OnMarkerDiscovered_ConcurrentCalls_NoCorruption()
         {
-            var filter = new SearchFrameFilter(() => { });
+            var filter = new SearchFrameFilter();
             filter.SetSearchString("Test");
 
             // Feed 10,000 markers from parallel threads
@@ -226,7 +226,7 @@ namespace SpikeTrap.Tests
         [Test]
         public void Matches_ConcurrentReads_NoCorruption()
         {
-            var filter = new SearchFrameFilter(() => { });
+            var filter = new SearchFrameFilter();
             filter.SetSearchString("Hit");
             filter.OnMarkerDiscovered(1, "HitMarker");
             filter.OnMarkerDiscovered(2, "MissMarker");
@@ -253,7 +253,7 @@ namespace SpikeTrap.Tests
         [Test]
         public void OnMarkerDiscovered_WhileMatching_NoCorruption()
         {
-            var filter = new SearchFrameFilter(() => { });
+            var filter = new SearchFrameFilter();
             filter.SetSearchString("Concurrent");
 
             // Seed some initial markers
@@ -295,7 +295,7 @@ namespace SpikeTrap.Tests
         [Test]
         public void SetSearchString_WhileOnMarkerDiscovered_NoCorruption()
         {
-            var filter = new SearchFrameFilter(() => { });
+            var filter = new SearchFrameFilter();
             filter.SetSearchString("Alpha");
 
             // Two threads race: one flips the search string, the other discovers markers.
@@ -461,7 +461,7 @@ namespace SpikeTrap.Tests
         [Test]
         public void SearchFilter_EmptyHashSet_ReturnsFalse()
         {
-            var filter = new SearchFrameFilter(() => { });
+            var filter = new SearchFrameFilter();
             filter.SetSearchString("Hit");
             filter.OnMarkerDiscovered(1, "HitMarker");
 
@@ -473,7 +473,7 @@ namespace SpikeTrap.Tests
         [Test]
         public void SearchFilter_NullMarkerName_DoesNotThrow()
         {
-            var filter = new SearchFrameFilter(() => { });
+            var filter = new SearchFrameFilter();
             filter.SetSearchString("Test");
 
             // Current code may NRE on null markerName — this test documents the gap.
@@ -489,7 +489,7 @@ namespace SpikeTrap.Tests
             // Create filters
             var spike = new SpikeFrameFilter(30f);
             var gc = new GcFrameFilter(1f); // 1 KB = 1024 bytes
-            var search = new SearchFrameFilter(() => { });
+            var search = new SearchFrameFilter();
             search.SetSearchString("Network");
             search.OnMarkerDiscovered(1, "NetworkSync");
             search.OnMarkerDiscovered(99, "PlayerLoop");
