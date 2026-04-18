@@ -359,13 +359,21 @@ namespace SpikeTrap.Editor
                 // Draw the hierarchy toolbar (with view type dropdown) then the timeline below
                 m_FrameDataHierarchyView.DrawToolbarOnly(frameData, fetchData, ref m_UpdateViewLive);
 
-                int frameIndex = (int)ProfilerWindow.selectedFrameIndex;
-                if (frameIndex < 0) frameIndex = ProfilerDriver.lastFrameIndex;
-                // Calculate remaining rect below toolbar for the timeline
-                float toolbarBottom = GUILayoutUtility.GetLastRect().yMax;
-                var timelineRect = new Rect(rect.x, toolbarBottom, rect.width, rect.yMax - toolbarBottom);
-                if (timelineRect.height > 1f)
-                    m_TimelineGUI.DoGUI(frameIndex, timelineRect, fetchData, ref m_UpdateViewLive);
+                bool isDataAvailable = frameData != null && frameData.valid;
+                if (!isDataAvailable)
+                {
+                    // Skip native timeline render — it draws its own toolbar when empty, causing a duplicate strip.
+                    GUILayout.Label(ProfilerFrameDataHierarchyView.NoFrameDataContent, EditorStyles.label);
+                }
+                else
+                {
+                    int frameIndex = (int)ProfilerWindow.selectedFrameIndex;
+                    if (frameIndex < 0) frameIndex = ProfilerDriver.lastFrameIndex;
+                    float toolbarBottom = GUILayoutUtility.GetLastRect().yMax;
+                    var timelineRect = new Rect(rect.x, toolbarBottom, rect.width, rect.yMax - toolbarBottom);
+                    if (timelineRect.height > 1f)
+                        m_TimelineGUI.DoGUI(frameIndex, timelineRect, fetchData, ref m_UpdateViewLive);
+                }
             }
             else
             {
