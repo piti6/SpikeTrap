@@ -776,9 +776,9 @@ namespace SpikeTrap.Editor
             long gcBytes = 0;
             float editorLoopMs = 0f;
 
-            // Only build UniqueMarkerIds when the search filter is active — saves HashSet.Add per sample
-            bool searchFilterIsActive = m_SearchFilter != null && m_SearchFilter.IsActive;
-            HashSet<int> markerIds = searchFilterIsActive ? new HashSet<int>() : null;
+            // Always populate UniqueMarkerIds. The search filter can be toggled on after frames are
+            // already cached, at which point a lazy null would leave them permanently unmatchable.
+            var markerIds = new HashSet<int>();
 
             // Collect newly discovered markers during extraction, notify filters after
             List<(int MarkerId, string MarkerName)> newMarkers = null;
@@ -807,21 +807,9 @@ namespace SpikeTrap.Editor
                     {
                         int markerId = raw.GetSampleMarkerId(i);
 
-                        // Collect unique marker IDs only when search is active
-                        if (searchFilterIsActive)
+                        if (markerIds.Add(markerId) && s_MarkerNames.TryAdd(markerId, raw.GetSampleName(i)))
                         {
-                            if (markerIds.Add(markerId) && s_MarkerNames.TryAdd(markerId, raw.GetSampleName(i)))
-                            {
-                                (newMarkers ??= new()).Add((markerId, s_MarkerNames[markerId]));
-                            }
-                        }
-                        else
-                        {
-                            if (!s_MarkerNames.ContainsKey(markerId))
-                            {
-                                var markerName = s_MarkerNames[markerId] = raw.GetSampleName(i);
-                                (newMarkers ??= new()).Add((markerId, markerName));
-                            }
+                            (newMarkers ??= new()).Add((markerId, s_MarkerNames[markerId]));
                         }
 
                         float sampleTimeMs = raw.GetSampleTimeMs(i);
