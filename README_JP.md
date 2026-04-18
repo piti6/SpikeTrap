@@ -170,6 +170,30 @@ foreach (var s in spikes)
     Debug.Log(s); // "Frame 296: 2038.40ms, GC 5.7KB | NavMeshManager=1953.89ms, ..."
 ```
 
+### AIエージェント & Claude Skills
+
+SpikeTrapはコードファースト設計です。すべてのUI操作は `SpikeTrapApi` に対応するメソッドを持ち、結果はマーカー名解決済みでソート済みで返り、分析はUIを操作せずに静的キャッシュから行えます。AIエージェント（Claude Code、uLoop MCP、エディタスクリプト）から駆動しやすい構造になっています。
+
+パッケージには `Packages/com.piti6.spike-trap/.claude/skills/` 以下に2つのClaude Code skillが同梱されており、よく使うワークフローをスラッシュコマンドとして呼び出せます:
+
+- **`/spike-trap`** — エンドツーエンドのプロファイリングセッション: Play Mode開始 → マッチフレーム収集 → 停止 → `.data` 保存 → マーカー名別にトップボトルネックを要約。プロファイリングをスキップしてキャッシュ済みデータのみを分析する `analyze` モードも利用可能。
+- **`/qa-test`** — SpikeTrap QAスイート（10スイート・52テスト: APIコントラクト、Collectライフサイクル、フィルター精度、閾値更新、破棄フロー、ドメインリロード耐性、マーカー解決、UI検証）を実行。
+
+```
+/spike-trap profile 33ms 10 seconds
+/spike-trap analyze 16ms
+/qa-test full
+```
+
+APIがエージェントに向いている理由:
+
+- **セッション単位、フレーム単位ではない** — `StartCollecting` / `StopCollectingAndSaveAsync` がキャプチャ全体をラップ。エージェントは開始・待機・停止のみでよく、フレーム単位のイテレーションやバッファ管理は不要。
+- **ソート済み・名前解決済みの結果** — `GetSpikeFrames` は `TopMarkerNames` 解決済みのフレームを悪い順で返却。エージェント側で `ProfilerDriver` を扱う必要なし。
+- **UIなしでの分析** — `GetSpikeFrames` と `GetCachedFrameSummaries` は静的キャッシュを読むため、Profilerウィンドウを操作せずに読み込み済み `.data` を解析可能。
+- **セッション認識キャッシュ** — 同じ `.data` を再読み込みしてもキャッシュを再利用するため、`load → analyze` を繰り返しても再抽出は発生しない。
+
+エージェント向けAPIリファレンスの全容は `Packages/com.piti6.spike-trap/CLAUDE.md` を参照してください。
+
 ## アーキテクチャ
 
 ### プラグイン可能なフィルターシステム

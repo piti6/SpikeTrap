@@ -172,6 +172,30 @@ foreach (var s in spikes)
     Debug.Log(s); // "Frame 296: 2038.40ms, GC 5.7KB | NavMeshManager=1953.89ms, ..."
 ```
 
+### AI Agents & Claude Skills
+
+SpikeTrap is designed code-first: every UI action has an `SpikeTrapApi` equivalent, results come back pre-sorted with marker names already resolved, and analysis works on the static cache without driving the UI. This makes it straightforward to drive from AI agents (Claude Code, uLoop MCP, editor scripts).
+
+The package ships two Claude Code skills under `Packages/com.piti6.spike-trap/.claude/skills/` that wrap common workflows as slash commands:
+
+- **`/spike-trap`** — runs an end-to-end profiling session: enters play mode, collects matched frames, stops, saves to `.data`, and summarizes top bottlenecks by marker name. Also has an `analyze` mode that skips profiling and reports against already-cached data.
+- **`/qa-test`** — runs the SpikeTrap QA suite (52 tests across 10 suites: API contracts, collect lifecycle, filter accuracy, threshold updates, discard flow, domain reload survival, marker resolution, UI checks).
+
+```
+/spike-trap profile 33ms 10 seconds
+/spike-trap analyze 16ms
+/qa-test full
+```
+
+Why the API works well for agents:
+
+- **Session-scoped, not frame-scoped** — `StartCollecting` / `StopCollectingAndSaveAsync` wrap a full capture. The agent starts, waits, stops — no frame-by-frame iteration or buffer management.
+- **Pre-sorted, pre-resolved results** — `GetSpikeFrames` returns frames worst-first with `TopMarkerNames` already resolved. No `ProfilerDriver` plumbing on the agent side.
+- **Analysis without UI interaction** — `GetSpikeFrames` and `GetCachedFrameSummaries` read the static cache, so agents can inspect a loaded `.data` file without driving the Profiler window.
+- **Session-aware cache** — reloading the same `.data` reuses its cache, so repeated `load → analyze` cycles don't re-extract.
+
+The full agent-facing API reference lives at `Packages/com.piti6.spike-trap/CLAUDE.md`.
+
 ## Architecture
 
 ### Pluggable Filter System
