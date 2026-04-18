@@ -111,6 +111,9 @@ namespace SpikeTrap.Editor
         readonly List<string> m_MarkedFrameTempFiles = new List<string>();
         int m_DefaultFrameHistoryLength;
         const int k_SaveMarkedBufferSize = 1;
+        // Show a progress bar during merge once we have this many collected files.
+        // Each LoadProfile/SaveProfile call is synchronous on the main thread — below this the run finishes fast enough that a progress bar would just flicker.
+        const int k_MergeProgressThreshold = 10;
         VisualElement m_ChartOverlay;
         Label m_ChartOverlayLabel;
         IMGUIContainer m_IMGUIView;
@@ -696,8 +699,7 @@ namespace SpikeTrap.Editor
 
         bool AnyFilterActive()
         {
-            foreach (var f in m_Filters)
-                if (f.IsActive) return true;
+            foreach (var f in m_Filters) if (f.IsActive) return true;
             return false;
         }
 
@@ -1518,17 +1520,28 @@ namespace SpikeTrap.Editor
                     return;
                 }
 
+                bool showProgress = tempFiles.Count >= k_MergeProgressThreshold;
                 try
                 {
                     bool first = true;
-                    foreach (var tempFile in tempFiles)
+                    for (int i = 0; i < tempFiles.Count; i++)
                     {
+                        var tempFile = tempFiles[i];
                         if (!System.IO.File.Exists(tempFile))
                             continue;
+                        if (showProgress)
+                        {
+                            EditorUtility.DisplayProgressBar(
+                                "SpikeTrap",
+                                $"Merging collected frames ({i + 1}/{tempFiles.Count})...",
+                                (float)i / tempFiles.Count);
+                        }
                         ProfilerDriver.LoadProfile(tempFile, !first);
                         first = false;
                     }
 
+                    if (showProgress)
+                        EditorUtility.DisplayProgressBar("SpikeTrap", "Saving merged profile...", 1f);
                     ProfilerDriver.SaveProfile(savePath);
 
                     foreach (var tempFile in tempFiles)
@@ -1547,6 +1560,11 @@ namespace SpikeTrap.Editor
                 {
                     ProfilerUserSettings.frameCount = m_DefaultFrameHistoryLength;
                     tcs.TrySetException(e);
+                }
+                finally
+                {
+                    if (showProgress)
+                        EditorUtility.ClearProgressBar();
                 }
             }
             EditorApplication.delayCall += DelayedMerge;
