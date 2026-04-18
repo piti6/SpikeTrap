@@ -75,6 +75,16 @@ namespace UTJ.SS2Profiler
 
         public void Dispose()
         {
+            // Clear active to avoid "Releasing render texture that is set to be RenderTexture.active!"
+            // if one of our RTs is still bound (e.g. from ReadBackSyncAtIdx or capture).
+            for (int i = 0; i < FRAME_NUM; ++i)
+            {
+                if (RenderTexture.active == frames[i].renderTexture)
+                {
+                    RenderTexture.active = null;
+                    break;
+                }
+            }
             for (int i = 0; i < FRAME_NUM; ++i)
             {
                 frames[i].renderTexture.Release();
@@ -152,9 +162,11 @@ namespace UTJ.SS2Profiler
             {
                 tex2d = new Texture2D(rt.width, rt.height, textureFormat, false);
             }
+            var prevActive = RenderTexture.active;
             RenderTexture.active = rt;
             tex2d.ReadPixels(new Rect(0, 0, rt.width, rt.height), 0, 0);
             tex2d.Apply();
+            RenderTexture.active = prevActive;
             var bytes =  tex2d.GetRawTextureData<byte>();
 
             // Emit tag info AND image data in the same frame
