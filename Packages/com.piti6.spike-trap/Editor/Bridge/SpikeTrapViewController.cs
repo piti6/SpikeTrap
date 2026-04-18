@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Text;
+using Unity.Profiling;
 using Unity.Profiling.Editor;
 using UnityEditor;
 using UnityEditor.Profiling;
@@ -12,6 +13,7 @@ using UnityEngine.UIElements;
 
 namespace SpikeTrap.Editor
 {
+    [IgnoredByDeepProfiler]
     internal sealed class SpikeTrapViewController : ProfilerModuleViewController
     {
         internal static volatile SpikeTrapViewController s_ActiveInstance;
@@ -361,6 +363,15 @@ namespace SpikeTrap.Editor
                 return;
             }
 
+            // Deep Profile targeting the Editor turns every per-frame accessor into a multi-second
+            // HierarchyFrameDataView rebuild. Pause our analysis and point users at Unity's
+            // built-in CPU Usage module until Deep Profile is off or the target switches away from Editor.
+            if (ProfilerDriver.deepProfiling && ProfilerDriver.profileEditor)
+            {
+                DrawDeepProfileEditModePausedBanner();
+                return;
+            }
+
             // Update shared frame data cache and matched frames
             UpdateFrameDataCacheAndMatches();
 
@@ -412,6 +423,17 @@ namespace SpikeTrap.Editor
                     ? $"Collecting...  ({count} frames captured)"
                     : "Collecting...";
             }
+        }
+
+        void DrawDeepProfileEditModePausedBanner()
+        {
+            EditorGUILayout.Space(10);
+            EditorGUILayout.HelpBox(
+                "Deep Profile is enabled in Edit Mode.\n\n" +
+                "SpikeTrap has paused per-frame extraction and screenshot preview — under Deep Profile each selected frame would trigger multi-second hierarchy rebuilds in the Editor.\n\n" +
+                "Resume by entering Play Mode or disabling Deep Profile in the Profiler toolbar. " +
+                "To inspect captured data while Deep Profile stays on, switch to Unity's built-in CPU Usage module.",
+                MessageType.Info);
         }
 
         void DrawCollectingOverlay()
@@ -614,7 +636,10 @@ namespace SpikeTrap.Editor
 
         Texture2D LoadScreenshotFromFrame(int frameIdx)
         {
-            using var view = ProfilerDriver.GetHierarchyFrameDataView(frameIdx, 0, HierarchyFrameDataView.ViewModes.Default, 0, false);
+            // RawFrameDataView skips the hierarchy-tree construction that HierarchyFrameDataView
+            // performs — critical under deep profile, where building a hierarchy for a single frame
+            // can take hundreds of ms.
+            using var view = ProfilerDriver.GetRawFrameDataView(frameIdx, 0);
             if (view == null || !view.valid)
                 return null;
 
@@ -729,7 +754,6 @@ namespace SpikeTrap.Editor
         /// </summary>
         CachedFrameData ExtractFrameData(int frameIndex)
         {
-            UnityEngine.Profiling.Profiler.BeginSample("ExtractFrameData");
             float frameTimeMs;
             using (var iter = new ProfilerFrameDataIterator())
             {
@@ -741,8 +765,8 @@ namespace SpikeTrap.Editor
             float editorLoopMs = 0f;
 
             // Only build UniqueMarkerIds when the search filter is active — saves HashSet.Add per sample
-            bool needMarkerIds = m_SearchFilter != null && m_SearchFilter.IsActive;
-            HashSet<int> markerIds = needMarkerIds ? new HashSet<int>() : null;
+            bool searchFilterIsActive = m_SearchFilter != null && m_SearchFilter.IsActive;
+            HashSet<int> markerIds = searchFilterIsActive ? new HashSet<int>() : null;
 
             // Collect newly discovered markers during extraction, notify filters after
             List<(int MarkerId, string MarkerName)> newMarkers = null;
@@ -772,12 +796,20 @@ namespace SpikeTrap.Editor
                         int markerId = raw.GetSampleMarkerId(i);
 
                         // Collect unique marker IDs only when search is active
-                        bool isNewMarker = markerIds != null ? markerIds.Add(markerId) : !s_MarkerNames.ContainsKey(markerId);
-                        if (isNewMarker && s_MarkerNames.TryAdd(markerId, raw.GetSampleName(i)))
+                        if (searchFilterIsActive)
                         {
-                            if (newMarkers == null)
-                                newMarkers = new List<(int MarkerId, string MarkerName)>();
-                            newMarkers.Add((markerId, s_MarkerNames[markerId]));
+                            if (markerIds.Add(markerId) && s_MarkerNames.TryAdd(markerId, raw.GetSampleName(i)))
+                            {
+                                (newMarkers ??= new()).Add((markerId, s_MarkerNames[markerId]));
+                            }
+                        }
+                        else
+                        {
+                            if (!s_MarkerNames.ContainsKey(markerId))
+                            {
+                                var markerName = s_MarkerNames[markerId] = raw.GetSampleName(i);
+                                (newMarkers ??= new()).Add((markerId, markerName));
+                            }
                         }
 
                         float sampleTimeMs = raw.GetSampleTimeMs(i);
@@ -820,9 +852,7 @@ namespace SpikeTrap.Editor
             }
 
             float effectiveMs = isEditor ? frameTimeMs - editorLoopMs : frameTimeMs;
-            var frameData = new CachedFrameData(effectiveMs, gcBytes, markerIds, topMarkers);
-            UnityEngine.Profiling.Profiler.EndSample();
-            return frameData;
+            return new CachedFrameData(effectiveMs, gcBytes, markerIds, topMarkers);
         }
 
         /// <summary>Returns true if the frame was newly extracted (not cached).</summary>
