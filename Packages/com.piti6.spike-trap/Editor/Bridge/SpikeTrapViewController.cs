@@ -243,10 +243,12 @@ namespace SpikeTrap.Editor
                 {
                     m_FrameDataHierarchyView.OnToggleLive -= OnHierarchyLiveToggle;
                     m_FrameDataHierarchyView.userChangedThread -= OnUserChangedThread;
-                    m_FrameDataHierarchyView.searchChanged -= OnSearchChanged;
                     m_FrameDataHierarchyView.viewTypeChanged -= OnViewTypeChanged;
                     m_FrameDataHierarchyView.OnDisable();
                 }
+
+                if (m_SearchFilter != null)
+                    m_SearchFilter.SearchStringChanged -= OnFilterSearchChanged;
             }
 
             base.Dispose(disposing);
@@ -261,10 +263,12 @@ namespace SpikeTrap.Editor
             m_FrameDataHierarchyView.OnEnable(m_ProfilerWindowController);
             m_FrameDataHierarchyView.OnToggleLive += OnHierarchyLiveToggle;
             m_FrameDataHierarchyView.userChangedThread += OnUserChangedThread;
-            m_FrameDataHierarchyView.searchChanged += OnSearchChanged;
             m_FrameDataHierarchyView.viewTypeChanged += OnViewTypeChanged;
             m_FrameDataHierarchyView.viewType = (int)m_ViewMode;
-            m_FrameDataHierarchyView.hideSearchBar = true;
+            // Let the hierarchy view draw its own native search bar — it narrows only the visible rows
+            // of the selected frame, matching Unity's built-in CPU Usage module. Our SearchFrameFilter
+            // owns a separate toolbar search that narrows the frame set (highlight strip + Collect).
+            m_FrameDataHierarchyView.hideSearchBar = false;
 
             ProfilerWindow.recordingStateChanged += OnRecordingStateChanged;
 
@@ -273,8 +277,8 @@ namespace SpikeTrap.Editor
 
             var gcFilter = new GcFrameFilter();
 
-            m_SearchFilter = new SearchFrameFilter(
-                () => m_FrameDataHierarchyView.DrawSearchBarExternal());
+            m_SearchFilter = new SearchFrameFilter();
+            m_SearchFilter.SearchStringChanged += OnFilterSearchChanged;
 
             m_Filters.Add(m_SpikeFilter);
             m_Filters.Add(gcFilter);
@@ -772,9 +776,9 @@ namespace SpikeTrap.Editor
             long gcBytes = 0;
             float editorLoopMs = 0f;
 
-            // Only build UniqueMarkerIds when the search filter is active — saves HashSet.Add per sample
-            bool searchFilterIsActive = m_SearchFilter != null && m_SearchFilter.IsActive;
-            HashSet<int> markerIds = searchFilterIsActive ? new HashSet<int>() : null;
+            // Always populate UniqueMarkerIds. The search filter can be toggled on after frames are
+            // already cached, at which point a lazy null would leave them permanently unmatchable.
+            var markerIds = new HashSet<int>();
 
             // Collect newly discovered markers during extraction, notify filters after
             List<(int MarkerId, string MarkerName)> newMarkers = null;
@@ -803,21 +807,9 @@ namespace SpikeTrap.Editor
                     {
                         int markerId = raw.GetSampleMarkerId(i);
 
-                        // Collect unique marker IDs only when search is active
-                        if (searchFilterIsActive)
+                        if (markerIds.Add(markerId) && s_MarkerNames.TryAdd(markerId, raw.GetSampleName(i)))
                         {
-                            if (markerIds.Add(markerId) && s_MarkerNames.TryAdd(markerId, raw.GetSampleName(i)))
-                            {
-                                (newMarkers ??= new()).Add((markerId, s_MarkerNames[markerId]));
-                            }
-                        }
-                        else
-                        {
-                            if (!s_MarkerNames.ContainsKey(markerId))
-                            {
-                                var markerName = s_MarkerNames[markerId] = raw.GetSampleName(i);
-                                (newMarkers ??= new()).Add((markerId, markerName));
-                            }
+                            (newMarkers ??= new()).Add((markerId, s_MarkerNames[markerId]));
                         }
 
                         float sampleTimeMs = raw.GetSampleTimeMs(i);
@@ -1239,7 +1231,7 @@ namespace SpikeTrap.Editor
             }
         }
 
-        void OnSearchChanged(string newSearch)
+        void OnFilterSearchChanged(string newSearch)
         {
             m_SearchFilter.SetSearchString(newSearch);
             System.Threading.Tasks.Parallel.ForEach(s_MarkerNames, kvp =>

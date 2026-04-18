@@ -1,11 +1,16 @@
 using System;
 using System.Collections.Concurrent;
+using UnityEditor;
+using UnityEditor.IMGUI.Controls;
 using UnityEngine;
 
 namespace SpikeTrap.Editor
 {
     /// <summary>
     /// Filters frames containing a profiler sample whose name matches a search term (case-insensitive).
+    /// Owns its own toolbar search field — independent of the hierarchy view's native search, which
+    /// only narrows visible rows inside a selected frame. This field narrows the frame set itself
+    /// (highlight strip + Collect match criterion).
     /// Thread-safe: <see cref="OnMarkerDiscovered"/> and <see cref="Matches"/> can be called from any thread.
     /// </summary>
     internal sealed class SearchFrameFilter : FrameFilterBase
@@ -23,12 +28,10 @@ namespace SpikeTrap.Editor
         }
 
         volatile SearchState m_State = new SearchState(null);
-        readonly Action m_DrawSearchBar;
+        readonly SearchField m_SearchField = new SearchField();
+        string m_UiSearchString = string.Empty;
 
-        public SearchFrameFilter(Action drawSearchBar)
-        {
-            m_DrawSearchBar = drawSearchBar;
-        }
+        public event Action<string> SearchStringChanged;
 
         public override Color HighlightColor => new Color(1f, 0.75f, 0.1f, 0.95f);
         public override bool IsActive => !string.IsNullOrEmpty(m_State.SearchString);
@@ -38,11 +41,17 @@ namespace SpikeTrap.Editor
             // Single atomic reference swap — concurrent readers see either the old complete
             // state or the new empty state; never a mix of old string with new dictionaries.
             m_State = new SearchState(search);
+            m_UiSearchString = search ?? string.Empty;
         }
 
         public override bool DrawToolbarControls()
         {
-            m_DrawSearchBar?.Invoke();
+            var newSearch = m_SearchField.OnToolbarGUI(m_UiSearchString, GUILayout.Width(180f)) ?? string.Empty;
+            if (!string.Equals(newSearch, m_UiSearchString, StringComparison.Ordinal))
+            {
+                m_UiSearchString = newSearch;
+                SearchStringChanged?.Invoke(newSearch);
+            }
             return false;
         }
 
