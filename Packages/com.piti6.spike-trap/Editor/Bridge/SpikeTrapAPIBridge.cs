@@ -73,8 +73,7 @@ namespace SpikeTrap.Editor
                 inst.GcFilter?.SetThresholdKB(gcThresholdKB);
 
             inst.MarkFiltersDirty();
-            inst.StartCollectingInternal();
-            return true;
+            return inst.StartCollectingInternal();
         }
 
         /// <summary>

@@ -357,18 +357,20 @@ namespace SpikeTrap.Editor
             // Filter strips — always visible so thresholds can be adjusted while collecting
             DrawCombinedHighlightStrip(rect);
 
-            if (IsCollectingMarkedFrames)
+            // Deep Profile targeting the Editor turns every per-frame accessor into a multi-second
+            // HierarchyFrameDataView rebuild. Short-circuit analysis, screenshot preview, AND the
+            // Collect-mode overlay — the OnNewProfilerFrame callback also early-returns while this
+            // gate is active, so no extraction runs. Gate wins over the collecting overlay so the
+            // user is told Collect is paused rather than seeing a "Collecting..." lie.
+            if (IsDeepProfileEditorGateActive)
             {
-                DrawCollectingOverlay();
+                DrawDeepProfileEditModePausedBanner();
                 return;
             }
 
-            // Deep Profile targeting the Editor turns every per-frame accessor into a multi-second
-            // HierarchyFrameDataView rebuild. Pause our analysis and point users at Unity's
-            // built-in CPU Usage module until Deep Profile is off or the target switches away from Editor.
-            if (ProfilerDriver.deepProfiling && ProfilerDriver.profileEditor)
+            if (IsCollectingMarkedFrames)
             {
-                DrawDeepProfileEditModePausedBanner();
+                DrawCollectingOverlay();
                 return;
             }
 
@@ -425,15 +427,21 @@ namespace SpikeTrap.Editor
             }
         }
 
+        static bool IsDeepProfileEditorGateActive
+            => ProfilerDriver.deepProfiling && ProfilerDriver.profileEditor;
+
         void DrawDeepProfileEditModePausedBanner()
         {
             EditorGUILayout.Space(10);
-            EditorGUILayout.HelpBox(
+            string body =
                 "Deep Profile is enabled in Edit Mode.\n\n" +
-                "SpikeTrap has paused per-frame extraction and screenshot preview — under Deep Profile each selected frame would trigger multi-second hierarchy rebuilds in the Editor.\n\n" +
-                "Resume by entering Play Mode or disabling Deep Profile in the Profiler toolbar. " +
-                "To inspect captured data while Deep Profile stays on, switch to Unity's built-in CPU Usage module.",
-                MessageType.Info);
+                "SpikeTrap has paused per-frame extraction and the screenshot preview — under Deep Profile each extracted frame would trigger multi-second hierarchy rebuilds in the Editor.";
+            if (IsCollectingMarkedFrames)
+                body += "\n\nCollect mode is still active but capture is suspended while this gate is on: frames recorded during this window will not be evaluated against filters.";
+            body +=
+                "\n\nResume by entering Play Mode or disabling Deep Profile in the Profiler toolbar. " +
+                "To inspect captured data while Deep Profile stays on, switch to Unity's built-in CPU Usage module.";
+            EditorGUILayout.HelpBox(body, MessageType.Info);
         }
 
         void DrawCollectingOverlay()
@@ -576,7 +584,7 @@ namespace SpikeTrap.Editor
                     EditorGUIUtility.TrTextContent("Collect", "Start collecting frames matching active filters."),
                     EditorStyles.toolbarButton))
                 {
-                    EditorApplication.delayCall += StartCollectingInternal;
+                    EditorApplication.delayCall += () => StartCollectingInternal();
                 }
             }
 
@@ -1191,6 +1199,12 @@ namespace SpikeTrap.Editor
 
         void OnNewProfilerFrame(int connectionId, int frameIndex)
         {
+            // IsFrameMatched calls into ExtractFrameData which iterates every sample in the frame.
+            // Under Deep Profile targeting the Editor that is millions of samples per frame — freezing
+            // the editor on every captured frame. Bail early; the GUI shows a banner explaining the pause.
+            if (IsDeepProfileEditorGateActive)
+                return;
+
             bool isMarked = IsFrameMatched(frameIndex);
 
             if (IsCollectingMarkedFrames && isMarked)
@@ -1464,9 +1478,17 @@ namespace SpikeTrap.Editor
             }
         }
 
-        internal void StartCollectingInternal()
+        internal bool StartCollectingInternal()
         {
-            if (IsCollectingMarkedFrames) return;
+            if (IsCollectingMarkedFrames) return true;
+            if (IsDeepProfileEditorGateActive)
+            {
+                Debug.LogError(
+                    "[SpikeTrap] Refusing to start Collect: Deep Profile is on while the Profiler target is Editor. " +
+                    "Every captured frame would freeze the editor for multiple seconds. " +
+                    "Disable Deep Profile or switch the Profiler target to Playmode/Connected Player, then retry.");
+                return false;
+            }
             m_DefaultFrameHistoryLength = ProfilerUserSettings.frameCount;
             EditorPrefs.SetInt(k_DefaultFrameHistoryKey, m_DefaultFrameHistoryLength);
             ProfilerDriver.ClearAllFrames();
@@ -1486,6 +1508,7 @@ namespace SpikeTrap.Editor
                 UpdatePauseCallbackSubscription();
             }
             EditorApplication.delayCall += DelayedEnterCollectMode;
+            return true;
         }
 
         /// Transition out of Collect mode: unsubscribe frame callback, restore state.
