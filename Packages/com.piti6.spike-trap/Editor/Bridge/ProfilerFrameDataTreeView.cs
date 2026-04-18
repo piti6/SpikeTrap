@@ -636,6 +636,7 @@ namespace SpikeTrap.Editor
             bool requestedDelayedSearch = false;
 
             bool patternEmpty = string.IsNullOrEmpty(searchString);
+            bool searchJustCleared = patternEmpty && !string.IsNullOrEmpty(m_prevSearchPattern);
 
             if (patternEmpty)
                 m_prevSearchPattern = searchString;
@@ -679,6 +680,7 @@ namespace SpikeTrap.Editor
                 int currentFrameIdx = (int)m_ProfilerWindowController.selectedFrameIndex;
                 int expandedCount = state.expandedIDs.Count;
                 bool needsRebuild = m_ForceRebuild
+                    || searchJustCleared
                     || m_CachedBuildFrameIndex != currentFrameIdx
                     || m_CachedExpandedCount != expandedCount;
 
@@ -981,6 +983,9 @@ namespace SpikeTrap.Editor
         {
             if (searchChanged != null)
                 searchChanged.Invoke(newSearch);
+
+            // TreeView's base SearchChanged is a no-op — rows must be rebuilt explicitly when the pattern changes.
+            Reload();
         }
 
         protected override IList<int> GetAncestors(int id)
