@@ -50,6 +50,10 @@ Use `mcp__uLoopMCP__compile` to verify 0 errors.
 
 ### T1.2 — View Active (auto-setup if needed)
 
+First, unconditionally open the Profiler window via `mcp__uLoopMCP__execute-menu-item` with `MenuItemPath="Window/Analysis/Profiler"`. This is idempotent — if the window is already open it just focuses it. Wait ~2 seconds for it to initialize.
+
+Then check:
+
 ```csharp
 using SpikeTrap.Editor;
 return $"IsViewActive={SpikeTrapApi.IsViewActive}";
@@ -57,7 +61,7 @@ return $"IsViewActive={SpikeTrapApi.IsViewActive}";
 
 If `IsViewActive=True`, **PASS**.
 
-If `IsViewActive=False`, auto-open the Profiler window and select the SpikeTrap module, then re-check:
+If still `IsViewActive=False`, the SpikeTrap module isn't the selected one — force-select it and re-check:
 
 ```csharp
 using SpikeTrap.Editor;
@@ -233,12 +237,21 @@ return $"IsCollecting={SpikeTrapApi.IsCollecting}";
 
 ### T3.10 — Verify Saved File
 
+The uLoop sandbox blocks `System.IO.FileInfo`, so read the size via a `FileStream`:
+
 ```csharp
 string path = System.IO.Path.Combine(UnityEngine.Application.dataPath, "..", "qa-test-capture.data");
 bool exists = System.IO.File.Exists(path);
-long size = exists ? new System.IO.FileInfo(path).Length : 0;
+long size = 0;
+if (exists)
+{
+    using (var fs = System.IO.File.OpenRead(path))
+        size = fs.Length;
+}
 return $"Exists={exists}, SizeBytes={size}";
 ```
+
+If `File.OpenRead` is also blocked, fall back to `ls -la <path>` via Bash — mark PASS based on non-zero size from the shell output.
 
 **PASS**: Exists=True, SizeBytes > 0. **FAIL**: file missing or empty.
 
