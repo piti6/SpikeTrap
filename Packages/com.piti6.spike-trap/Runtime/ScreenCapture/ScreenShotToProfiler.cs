@@ -133,12 +133,16 @@ namespace UTJ.SS2Profiler
                 commandBuffer.name = "ScreenCapture";
             }
             commandBuffer.Clear();
+            var prevActive = RenderTexture.active;
             var rt = RenderTexture.GetTemporary(Screen.width, Screen.height, 0, RenderTextureFormat.ARGB32);
             ScreenCapture.CaptureScreenshotIntoRenderTexture(rt);
             commandBuffer.BeginSample(CAPTURE_CMD_SAMPLE);
             commandBuffer.Blit(rt, target);
             commandBuffer.EndSample(CAPTURE_CMD_SAMPLE);
             Graphics.ExecuteCommandBuffer(commandBuffer);
+            // CaptureScreenshotIntoRenderTexture leaves `rt` set as RenderTexture.active.
+            // Releasing an RT that's still active triggers "Releasing render texture that is set to be RenderTexture.active!".
+            RenderTexture.active = prevActive;
             RenderTexture.ReleaseTemporary(rt);
             commandBuffer.Clear();
         }
