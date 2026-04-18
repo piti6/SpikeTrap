@@ -372,7 +372,12 @@ namespace SpikeTrap.Editor
                 if (!isDataAvailable)
                 {
                     // Skip native timeline render — it draws its own toolbar when empty, causing a duplicate strip.
-                    GUILayout.Label(ProfilerFrameDataHierarchyView.NoFrameDataContent, EditorStyles.label);
+                    // Mirror ProfilerFrameDataHierarchyView.DoGUI's branching: show the live-disabled guidance
+                    // when recording overhead has suspended fetching, otherwise the generic noData label.
+                    var emptyLabel = (!fetchData && !m_UpdateViewLive)
+                        ? ProfilerFrameDataHierarchyView.LiveViewDisabledContent
+                        : ProfilerFrameDataHierarchyView.NoFrameDataContent;
+                    GUILayout.Label(emptyLabel, ProfilerFrameDataHierarchyView.ProfilerDetailsLabelStyle);
                 }
                 else
                 {
